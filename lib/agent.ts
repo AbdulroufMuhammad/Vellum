@@ -1079,10 +1079,13 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
                 throw new Error(`unknown tool: ${tc.name}`);
             }
             await emit({ type: "tool-result", payload: { callId, name: tc.name, ...summary } });
+            // The limit is on failures in a row: a run that recovers keeps going.
+            badCalls = 0;
           } catch (e) {
             const message = e instanceof Error ? e.message : String(e);
             result = { error: message };
-            await emit({ type: "tool-result", payload: { callId, name: tc.name, error: message } });
+            // The chat shows the first line; the model gets the whole message (e.g. the file text to copy from).
+            await emit({ type: "tool-result", payload: { callId, name: tc.name, error: message.split("\n")[0] } });
             badCalls++;
           }
           convo.push({ role: "tool", tool_call_id: toolCallId, content: JSON.stringify(result) });

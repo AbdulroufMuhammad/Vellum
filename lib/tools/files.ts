@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { removeEmDashes } from "@/lib/finalize";
 
 export const BUCKET = "artifacts";
 
@@ -25,6 +26,73 @@ const storageKey = (projectId: string, version: number, path: string, rev?: numb
  * and verified (the caller then clears this). The next request, or the user's own edit, starts a new one.
  */
 export type WorkingVersions = { versions: Record<string, number>; save: () => Promise<unknown> };
+
+/**
+ * `text` with whitespace runs collapsed to one space and the data-el ids the app
+ * adds left out, plus, for each character kept, where it came from in `text`.
+ */
+function loosen(text: string) {
+  let out = "";
+  const from: number[] = [];
+  for (let i = 0; i < text.length; ) {
+    const id = /^\s+data-el="[^"]*"/.exec(text.slice(i, i + 40));
+    if (id) {
+      i += id[0].length;
+      continue;
+    }
+    if (/\s/.test(text[i])) {
+      let j = i;
+      while (j < text.length && /\s/.test(text[j])) j++;
+      out += " ";
+      from.push(i);
+      i = j;
+      continue;
+    }
+    out += text[i];
+    from.push(i);
+    i++;
+  }
+  return { out, from };
+}
+
+/**
+ * Where old_str is in the file: exactly, or, since stored files are tidied on
+ * every write (ids added, em dashes replaced, spacing), ignoring those
+ * differences. Null when it isn't there, or isn't there just once.
+ */
+export function locate(content: string, oldStr: string): { start: number; end: number } | "many" | null {
+  const variants = [...new Set([oldStr, removeEmDashes(oldStr)])];
+  for (const v of variants) {
+    const at = content.indexOf(v);
+    if (at >= 0) return content.indexOf(v, at + v.length) >= 0 ? "many" : { start: at, end: at + v.length };
+  }
+  const file = loosen(content);
+  for (const v of variants) {
+    const needle = loosen(v).out.trim();
+    if (needle.length < 8) continue;
+    const at = file.out.indexOf(needle);
+    if (at < 0) continue;
+    if (file.out.indexOf(needle, at + needle.length) >= 0) return "many";
+    const last = at + needle.length - 1;
+    return { start: file.from[at], end: file.from[last] + 1 };
+  }
+  return null;
+}
+
+/** The part of the file closest to what old_str was meant to match, to copy from. */
+export function nearestText(content: string, oldStr: string) {
+  const lines = oldStr.split("\n").map((l) => l.trim()).filter((l) => l.length >= 10);
+  const fileLoose = loosen(content);
+  for (const line of lines.sort((a, b) => b.length - a.length)) {
+    const at = fileLoose.out.indexOf(loosen(line).out.trim());
+    if (at < 0) continue;
+    const pos = fileLoose.from[at];
+    const start = content.lastIndexOf("\n", Math.max(0, pos - 400)) + 1;
+    const end = content.indexOf("\n", Math.min(content.length, pos + oldStr.length + 400));
+    return content.slice(start, end < 0 ? content.length : end);
+  }
+  return null;
+}
 
 export type FileWrite = { path: string; version: number; url: string; created: boolean };
 
@@ -94,10 +162,18 @@ export function makeFileTools(db: SupabaseClient, projectId: string, transform?:
 
   async function str_replace({ path, old_str, new_str }: { path: string; old_str: string; new_str: string }) {
     const current = await read_file({ path });
-    const at = current.content.indexOf(old_str);
-    if (!old_str || at < 0) throw new Error("old_str not found in the file; read_file it again and copy the exact text");
-    if (current.content.indexOf(old_str, at + old_str.length) >= 0) throw new Error("old_str appears more than once; include more surrounding text");
-    const content = current.content.slice(0, at) + new_str + current.content.slice(at + old_str.length);
+    if (!old_str) throw new Error("old_str is empty; copy the exact text to replace from the file");
+    const found = locate(current.content, old_str);
+    if (found === "many") throw new Error("old_str appears more than once; include more surrounding text");
+    if (!found) {
+      const near = nearestText(current.content, old_str);
+      throw new Error(
+        near
+          ? `old_str isn't in the file as written. The closest part of the file (version ${current.version}) is below; copy the text to replace from it exactly:\n${near.slice(0, 2500)}`
+          : "old_str not found in the file; read_file it again and copy the exact text"
+      );
+    }
+    const content = current.content.slice(0, found.start) + String(new_str ?? "") + current.content.slice(found.end);
     return write_file({ path, content });
   }
 

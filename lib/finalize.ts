@@ -250,7 +250,18 @@ export function joinModuleScripts(html: string): string {
   return out + html.slice(at);
 }
 
+/**
+ * A document still being written in parts: a <script> or <style> opened and not
+ * yet closed. Parsing one of these drops the open tag (its code turns into page
+ * text), so it's stored as written until the part that closes it arrives.
+ */
+export function unfinishedDocument(html: string) {
+  const open = (tag: string) => (html.match(new RegExp(`<${tag}\\b`, "gi")) ?? []).length - (html.match(new RegExp(`</${tag}\\s*>`, "gi")) ?? []).length;
+  return open("script") > 0 || open("style") > 0;
+}
+
 export function finalizeArtifact(html: string, sources: Map<string, Source>): string {
+  if (unfinishedDocument(html)) return html;
   const root = ensureDocument(joinModuleScripts(html));
   const head = root.querySelector("head")!;
   if (!head.querySelector("meta[charset]")) head.insertAdjacentHTML("afterbegin", `<meta charset="utf-8">`);
