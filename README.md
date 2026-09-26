@@ -67,7 +67,10 @@ read-only file, render and export endpoints they use).
   real anchor points and instanced repeats; physical materials; HDRI lighting
   from three.js's example environment maps; a camera fitted to the model; or a
   real glTF model from a verified library (Khronos samples, three.js examples)
-  when the request matches one. Scenes expose `window.__vellum3d`, and the
+  when the request matches one; creatures, characters and other sculpted forms
+  are built as one continuously blended field with MarchingCubes instead of
+  glued-together parts, so limbs and joints fuse instead of showing a seam.
+  Scenes expose `window.__vellum3d`, and the
   check reports parts that float, a model cut off by the frame or spanning
   under 40% of it (judged from the model's vertices, with floors, backdrops,
   back-side domes and enclosing scenery left out), and photographs it from the
