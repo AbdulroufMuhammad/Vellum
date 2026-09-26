@@ -642,7 +642,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
       const f = await fileTools.read_file({ path });
       checks.set(f.path, (checks.get(f.path) ?? 0) + 1);
       if (unchecked === f.path) unchecked = null;
-      const c = await checkDesign(db, projectId, f.content, { deadline, signal, request: requestText(), printPages, renderTimeoutMs: phase === "check" ? 90_000 : undefined });
+      const c = await checkDesign(db, projectId, f.content, { deadline, signal, request: requestText(), printPages, renderTimeoutMs: phase === "check" || /three|webgl/i.test(f.content) ? 90_000 : undefined });
       const auto = automatedFindings(c);
       const serious = c.issues.filter((i) => i.severity !== "low");
       const visual = c.issues.map((i) => `${i.severity === "high" ? "High" : i.severity === "medium" ? "Medium" : "Low"}: ${i.where ? `${i.where}: ` : ""}${i.problem}`);

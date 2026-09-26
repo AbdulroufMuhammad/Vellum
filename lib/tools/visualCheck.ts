@@ -166,9 +166,15 @@ const INSPECT_3D = String.raw`(() => {
   // Share of the frame the model spans on its longer side (0 to 1).
   const fill = Math.max(0, Math.max((maxX - minX) / 2, (maxY - minY) / 2));
   const tiny = fill < 0.4;
+  // Renders straight from the WebGL canvas at a small size: page screenshots of software WebGL take 10s+ each on the server.
   window.__vellumView = (i) => {
     const dirs = [[0, 0.15, 1], [1, 0.15, 0], [0.75, 0.6, 0.75]];
     const d = new T.Vector3(...dirs[i]).normalize();
+    const r = v.renderer, W = 720, H = 450;
+    const saved = { size: r.getSize(new T.Vector2()), ratio: r.getPixelRatio(), aspect: cam.aspect, near: cam.near, far: cam.far };
+    r.setPixelRatio(1);
+    r.setSize(W, H, false);
+    if (cam.isPerspectiveCamera) cam.aspect = W / H;
     const fov = ((cam.fov || 45) * Math.PI) / 180;
     const hfov = 2 * Math.atan(Math.tan(fov / 2) * (cam.aspect || 1));
     cam.position.copy(center).addScaledVector(d, (radius / Math.sin(Math.min(fov, hfov) / 2)) * 1.05);
@@ -176,9 +182,13 @@ const INSPECT_3D = String.raw`(() => {
     cam.near = Math.min(cam.near, radius / 100);
     cam.far = Math.max(cam.far, radius * 20);
     cam.updateProjectionMatrix();
-    v.renderer.render(v.scene, cam);
-    const r = v.renderer.domElement.getBoundingClientRect();
-    return { x: Math.max(0, r.left), y: Math.max(0, r.top), width: Math.min(r.width, innerWidth), height: Math.min(r.height, innerHeight) };
+    r.render(v.scene, cam);
+    const url = r.domElement.toDataURL("image/jpeg", 0.7);
+    r.setPixelRatio(saved.ratio);
+    r.setSize(saved.size.x, saved.size.y, false);
+    Object.assign(cam, { aspect: saved.aspect, near: saved.near, far: saved.far });
+    cam.updateProjectionMatrix();
+    return url;
   };
   return { hook: true, parts: n, floating: floating.slice(0, 6), cutOff: out, tiny, fill: Math.round(fill * 100) / 100 };
 })()`;
@@ -295,7 +305,8 @@ async function render(html: string, printTarget: [number, number] | null): Promi
     const desktop = (await page.evaluate(INSPECT_PAGE)) as PageReport;
     lap("inspect");
     const height = Math.min(desktop.height, TILE * (printable ? 2 : MAX_TILES));
-    for (let y = 0; y < height; y += TILE) {
+    // A page no taller than the window is one viewport shot: full-page capture resizes the page, which makes WebGL re-render.
+    for (let y = desktop.height <= 810 ? height : 0; y < height; y += TILE) {
       const shot = await page
         .screenshot({ type: "jpeg", quality: 65, fullPage: true, timeout: 12_000, clip: { x: 0, y, width: WIDTH, height: Math.min(TILE, height - y) } })
         .catch((e: Error) => {
@@ -320,10 +331,10 @@ async function render(html: string, printTarget: [number, number] | null): Promi
       if (info?.hook) {
         threeD = { parts: info.parts ?? 0, floating: info.floating ?? [], cutOff: !!info.cutOff, tiny: !!info.tiny, fill: info.fill, hook: true };
         for (let i = 0; i < 3 && threeD.parts; i++) {
-          const clip = (await page.evaluate(`window.__vellumView(${i})`).catch(() => null)) as { x: number; y: number; width: number; height: number } | null;
-          if (!clip || clip.width < 50 || clip.height < 50) break;
-          const shot = await page.screenshot({ type: "jpeg", quality: 65, timeout: 12_000, clip }).catch(() => null);
-          if (shot) views.push(shot);
+          const url = (await page.evaluate(`window.__vellumView(${i})`).catch(() => null)) as string | null;
+          const b64 = typeof url === "string" ? url.split(",")[1] : "";
+          if (!b64 || b64.length < 2000) break;
+          views.push(Buffer.from(b64, "base64"));
         }
         lap(`3d(${threeD.parts} parts, ${views.length} views)`);
       } else if (/three/i.test(html)) threeD = { parts: 0, floating: [], cutOff: false, tiny: false, hook: false };
