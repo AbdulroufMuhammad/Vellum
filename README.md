@@ -68,8 +68,14 @@ read-only file, render and export endpoints they use).
   from three.js's example environment maps; a camera fitted to the model; or a
   real glTF model from a verified library (Khronos samples, three.js examples)
   when the request matches one. Scenes expose `window.__vellum3d`, and the
-  check reports parts that float, a model cut off or tiny in the frame, and
-  photographs it from the front, side and three-quarter view for the reviewer.
+  check reports parts that float, a model cut off by the frame or spanning
+  under 40% of it (judged from the model's vertices, with floors, backdrops,
+  back-side domes and enclosing scenery left out), and photographs it from the
+  front, side and three-quarter view for the reviewer.
+- **One script per page** — if a page built in parts ends up with its code in
+  several `<script type="module">` blocks and a later one uses an earlier
+  one's variables, writes merge them into one module (each import kept once);
+  independent or clashing modules are left alone.
 - **Split runs** — a new design (or a big request) runs as three steps, each
   its own serverless invocation with its own time budget and its own section
   in the chat: **planning** (think, research, ask; hand in a plan with
