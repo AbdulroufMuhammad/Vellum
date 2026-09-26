@@ -75,8 +75,8 @@ ${HDRIS.map((h) => `  - ${h.name} (${h.mood}): ${h.url}`).join("\n")}
 - renderer.toneMapping = ACESFilmicToneMapping, outputColorSpace SRGBColorSpace, devicePixelRatio capped at 2.
 
 Camera and checks:
-- Fit the camera to the model's bounding box (Box3.setFromObject) so it is never cut off; orbit controls with damping and sensible limits.
+- Fit the camera to the model's bounding box (Box3.setFromObject on the model group, not the scene) so it fills about 60 to 75% of the frame and is never cut off; orbit controls with damping and sensible limits.
 - Keep all the scene code in ONE <script type="module"> (if the file is written in parts, the whole script goes in the last part).
 - Import three.js ${THREE_VERSION} via the import map (build/three.module.js and examples/jsm/ addons from jsDelivr).
-- Right after building the scene, expose it for the automatic check: window.__vellum3d = { THREE, scene, camera, renderer }; name each part's mesh (mesh.name = "turret") and mark floors with mesh.userData.ground = true. The check photographs the model from several angles and flags parts that float or a model cut off by the frame.`;
+- Right after building the scene, expose it for the automatic check: window.__vellum3d = { THREE, scene, camera, renderer }; name each part's mesh (mesh.name = "turret"), mark floors with mesh.userData.ground = true and any backdrop, sweep or dome with mesh.userData.backdrop = true. The check photographs the model from several angles and flags parts that float or a model cut off by the frame.`;
 }

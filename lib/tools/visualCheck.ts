@@ -19,7 +19,7 @@ export type Automated = {
   /** For printable designs (an @page rule): how many pages it prints to, and how many it should. */
   print?: { pages: number; target: [number, number] | null };
   /** For 3D scenes that expose window.__vellum3d: parts attached to nothing, and how the model sits in the frame. */
-  threeD?: { parts: number; floating: string[]; cutOff: boolean; tiny: boolean; hook: boolean };
+  threeD?: { parts: number; floating: string[]; cutOff: boolean; tiny: boolean; fill?: number; hook: boolean };
 };
 
 export type VisualIssue = { where: string; problem: string; severity: "high" | "medium" | "low" };
@@ -99,14 +99,28 @@ const INSPECT_3D = String.raw`(() => {
   const T = v.THREE;
   v.scene.updateMatrixWorld(true);
   const parts = [], grounds = [];
+  const backSide = (o) => [].concat(o.material || []).some((m) => m && m.side === T.BackSide);
   v.scene.traverse((o) => {
     if (!o.isMesh || !o.visible || parts.length > 400) return;
+    const u = o.userData || {};
+    // Studio sweeps, sky domes and backdrops are scenery, not the model.
+    if (u.backdrop || u.environment || backSide(o)) return;
     const box = new T.Box3().setFromObject(o);
     if (box.isEmpty()) return;
     const sz = box.getSize(new T.Vector3());
-    ((o.userData && o.userData.ground) || sz.y < 1e-4 ? grounds : parts).push({ o, box });
+    (u.ground || sz.y < 1e-4 ? grounds : parts).push({ o, box });
   });
-  if (!parts.length) return { hook: true, parts: 0, floating: [], cutOff: false, tiny: false };
+  // A mesh far bigger than everything else that encloses it (a room, a backdrop) is scenery too.
+  for (let k = 0; k < 3 && parts.length > 1; k++) {
+    let bi = 0;
+    parts.forEach((p, i) => { if (p.box.getSize(new T.Vector3()).length() > parts[bi].box.getSize(new T.Vector3()).length()) bi = i; });
+    const rest = new T.Box3();
+    parts.forEach((p, i) => { if (i !== bi) rest.union(p.box); });
+    const big = parts[bi].box;
+    if (big.getSize(new T.Vector3()).length() > 3 * rest.getSize(new T.Vector3()).length() && big.containsPoint(rest.getCenter(new T.Vector3()))) parts.splice(bi, 1);
+    else break;
+  }
+  if (!parts.length) return { hook: true, parts: 0, floating: [], cutOff: false, tiny: false, fill: 0 };
   const all = new T.Box3();
   parts.forEach((p) => all.union(p.box));
   const center = all.getCenter(new T.Vector3());
@@ -129,28 +143,44 @@ const INSPECT_3D = String.raw`(() => {
     const c = parts[idx[0]].box.getCenter(new T.Vector3());
     floating.push(idx.slice(0, 3).map((i) => label(parts[i].o)).join(" + ") + " at (" + [c.x, c.y, c.z].map((x) => x.toFixed(2)).join(", ") + ")");
   }
+  // Where the model's real outline lands on screen: its vertices (sampled), not its bounding box, whose corners stick out past a long or rotated model.
   const cam = v.camera;
   cam.updateMatrixWorld(true);
   let minX = 1, maxX = -1, minY = 1, maxY = -1, out = false;
-  for (const x of [all.min.x, all.max.x]) for (const y of [all.min.y, all.max.y]) for (const z of [all.min.z, all.max.z]) {
-    const p = new T.Vector3(x, y, z).project(cam);
-    if (p.z > 1) continue;
-    if (Math.abs(p.x) > 1.04 || Math.abs(p.y) > 1.04) out = true;
+  const p = new T.Vector3();
+  const see = (x, y, z) => {
+    p.set(x, y, z).project(cam);
+    if (p.z > 1 || p.z < -1) return;
+    if (Math.abs(p.x) > 1.02 || Math.abs(p.y) > 1.02) out = true;
     minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+  };
+  for (const { o, box } of parts) {
+    const pos = o.geometry && o.geometry.attributes && o.geometry.attributes.position;
+    if (!pos || o.isInstancedMesh || o.isSkinnedMesh) {
+      for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y]) for (const z of [box.min.z, box.max.z]) see(x, y, z);
+      continue;
+    }
+    const step = Math.max(1, Math.floor(pos.count / 60));
+    for (let i = 0; i < pos.count; i += step) { p.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld); see(p.x, p.y, p.z); }
   }
-  const tiny = (maxX - minX) < 0.25 && (maxY - minY) < 0.25;
+  // Share of the frame the model spans on its longer side (0 to 1).
+  const fill = Math.max(0, Math.max((maxX - minX) / 2, (maxY - minY) / 2));
+  const tiny = fill < 0.4;
   window.__vellumView = (i) => {
     const dirs = [[0, 0.15, 1], [1, 0.15, 0], [0.75, 0.6, 0.75]];
     const d = new T.Vector3(...dirs[i]).normalize();
     const fov = ((cam.fov || 45) * Math.PI) / 180;
-    cam.position.copy(center).addScaledVector(d, (radius / Math.sin(fov / 2)) * 1.05);
+    const hfov = 2 * Math.atan(Math.tan(fov / 2) * (cam.aspect || 1));
+    cam.position.copy(center).addScaledVector(d, (radius / Math.sin(Math.min(fov, hfov) / 2)) * 1.05);
     cam.lookAt(center);
+    cam.near = Math.min(cam.near, radius / 100);
+    cam.far = Math.max(cam.far, radius * 20);
     cam.updateProjectionMatrix();
     v.renderer.render(v.scene, cam);
     const r = v.renderer.domElement.getBoundingClientRect();
     return { x: Math.max(0, r.left), y: Math.max(0, r.top), width: Math.min(r.width, innerWidth), height: Math.min(r.height, innerHeight) };
   };
-  return { hook: true, parts: n, floating: floating.slice(0, 6), cutOff: out, tiny };
+  return { hook: true, parts: n, floating: floating.slice(0, 6), cutOff: out, tiny, fill: Math.round(fill * 100) / 100 };
 })()`;
 
 type PageReport = {
@@ -288,7 +318,7 @@ async function render(html: string, printTarget: [number, number] | null): Promi
     if (/<canvas|three|webgl/i.test(html)) {
       const info = (await page.evaluate(INSPECT_3D).catch(() => null)) as (Automated["threeD"] & { hook: boolean }) | null;
       if (info?.hook) {
-        threeD = { parts: info.parts ?? 0, floating: info.floating ?? [], cutOff: !!info.cutOff, tiny: !!info.tiny, hook: true };
+        threeD = { parts: info.parts ?? 0, floating: info.floating ?? [], cutOff: !!info.cutOff, tiny: !!info.tiny, fill: info.fill, hook: true };
         for (let i = 0; i < 3 && threeD.parts; i++) {
           const clip = (await page.evaluate(`window.__vellumView(${i})`).catch(() => null)) as { x: number; y: number; width: number; height: number } | null;
           if (!clip || clip.width < 50 || clip.height < 50) break;

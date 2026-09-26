@@ -133,7 +133,7 @@ function automatedFindings(c: CheckResult): string[] {
   if (d && !d.hook) out.push("The 3D scene isn't exposed for inspection: right after building it, set window.__vellum3d = { THREE, scene, camera, renderer } and name the part meshes.");
   if (d?.floating.length) out.push(`These parts float, attached to nothing: ${d.floating.join("; ")}. Attach each to its parent part (touching surfaces, placed within its parent's group).`);
   if (d?.cutOff) out.push("The model is cut off by the frame: fit the camera to the model's bounding box.");
-  if (d?.tiny) out.push("The model is tiny in the frame: fit the camera to the model's bounding box.");
+  else if (d?.tiny) out.push(`The model is small in the frame (it spans ${Math.round((d.fill ?? 0) * 100)}% of it on its longer side): move the camera in so it fills about 60 to 75% of the frame, fitting the camera distance to the model's bounding box without extra margin.`);
   const p = a.print;
   if (p?.target && (p.pages < p.target[0] || p.pages > p.target[1])) {
     const want = p.target[0] === p.target[1] ? `exactly ${p.target[0]} page${p.target[0] > 1 ? "s" : ""}` : `${p.target[0]} to ${p.target[1]} pages`;

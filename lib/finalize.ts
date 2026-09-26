@@ -176,8 +176,82 @@ function printLayout(root: HTMLElement) {
   }
 }
 
+const MODULE_SCRIPT = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+const IMPORT_STMT = /^[ \t]*import\s+(?:[\s\S]*?\s+from\s*)?["'][^"']+["'][ \t]*;?[ \t]*$/gm;
+const TOP_DECL = /^(?:export\s+)?(?:const|let|var|class|function\*?|async\s+function\*?)\s+([A-Za-z_$][\w$]*)/gm;
+
+/** The local names a module's import statements bind. */
+function importNames(stmt: string) {
+  const clause = /import\s+([\s\S]*?)\s+from/.exec(stmt)?.[1] ?? "";
+  const names: string[] = [];
+  const star = /\*\s+as\s+([\w$]+)/.exec(clause);
+  if (star) names.push(star[1]);
+  const def = /^\s*([\w$]+)\s*(?:,|$)/.exec(clause);
+  if (def) names.push(def[1]);
+  const named = /\{([^}]*)\}/.exec(clause)?.[1];
+  if (named) for (const part of named.split(",")) { const n = part.trim().split(/\s+as\s+/).pop()?.trim(); if (n) names.push(n); }
+  return names;
+}
+
+/**
+ * A page built in parts sometimes ends up with its code split across several
+ * <script type="module"> blocks. Modules don't share variables, so a later one
+ * that uses an earlier one's scene, camera or helpers crashes. When that's the
+ * case (and merging can't clash), the blocks become one module, with each import
+ * kept once, at the last block's place (modules run after parsing either way).
+ */
+export function joinModuleScripts(html: string): string {
+  const blocks: { start: number; end: number; attrs: string; body: string }[] = [];
+  for (const m of html.matchAll(MODULE_SCRIPT)) {
+    if (!/\btype\s*=\s*["']?module\b/i.test(m[1]) || /\bsrc\s*=/i.test(m[1])) continue;
+    blocks.push({ start: m.index!, end: m.index! + m[0].length, attrs: m[1], body: m[2] });
+  }
+  if (blocks.length < 2) return html;
+  const parsed = blocks.map((b) => {
+    const imports = b.body.match(IMPORT_STMT) ?? [];
+    const code = b.body.replace(IMPORT_STMT, "");
+    const decls = [...code.matchAll(TOP_DECL)].map((m) => m[1]);
+    for (const m of code.matchAll(/^(?:const|let|var)\s*[{[]([^=]*)[}\]]\s*=/gm)) decls.push(...(m[1].match(/[A-Za-z_$][\w$]*/g) ?? []));
+    return { imports: imports.map((i) => i.trim()), code, decls };
+  });
+  // Only merge when a later block uses something an earlier one declared (so it was meant to share scope).
+  const uses = (code: string, name: string) => new RegExp(`(^|[^\\w$.])${name.replace(/\$/g, "\\$")}(?![\\w$])`).test(code);
+  const needed = parsed.some((b, j) => parsed.slice(0, j).some((a) => a.decls.some((n) => !b.decls.includes(n) && uses(b.code, n))));
+  if (!needed) return html;
+  // Refuse if merging would declare a name twice.
+  const seen = new Map<string, string>();
+  for (const b of parsed) {
+    for (const n of b.decls) {
+      if (seen.has(n)) return html;
+      seen.set(n, "decl");
+    }
+  }
+  const imports: string[] = [];
+  const bound = new Map<string, string>();
+  for (const b of parsed) {
+    for (const stmt of b.imports) {
+      const key = stmt.replace(/\s+/g, " ").replace(/;$/, "");
+      const names = importNames(stmt);
+      if (imports.some((i) => i.replace(/\s+/g, " ").replace(/;$/, "") === key)) continue;
+      for (const n of names) {
+        if (seen.get(n) === "decl" || bound.has(n)) return html;
+        bound.set(n, key);
+      }
+      imports.push(stmt);
+    }
+  }
+  const merged = `<script${blocks[0].attrs}>\n${imports.join("\n")}\n${parsed.map((b) => b.code.trim()).join("\n\n")}\n</script>`;
+  let out = "";
+  let at = 0;
+  blocks.forEach((b, i) => {
+    out += html.slice(at, b.start) + (i === blocks.length - 1 ? merged : "");
+    at = b.end;
+  });
+  return out + html.slice(at);
+}
+
 export function finalizeArtifact(html: string, sources: Map<string, Source>): string {
-  const root = ensureDocument(html);
+  const root = ensureDocument(joinModuleScripts(html));
   const head = root.querySelector("head")!;
   if (!head.querySelector("meta[charset]")) head.insertAdjacentHTML("afterbegin", `<meta charset="utf-8">`);
   if (!head.querySelector("meta[name=viewport]"))
