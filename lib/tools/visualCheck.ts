@@ -180,6 +180,9 @@ const INSPECT_3D = String.raw`(() => {
     if (cam.isPerspectiveCamera) cam.aspect = W / H;
     if (aim) aim();
     cam.updateProjectionMatrix();
+    // Render twice: a resize plus a big camera jump on the same frame occasionally reads back the
+    // stale (or still-clearing) framebuffer on the first pass in software WebGL.
+    r.render(v.scene, cam);
     r.render(v.scene, cam);
     const url = r.domElement.toDataURL("image/jpeg", 0.7);
     r.setPixelRatio(saved.ratio);
@@ -314,6 +317,9 @@ const INSPECT_BABYLON = String.raw`(() => {
     const savedSize = { w: v.engine.getRenderWidth(), h: v.engine.getRenderHeight() };
     v.engine.setSize(W, H);
     if (aim) aim();
+    // Render twice: a resize plus a big camera jump on the same frame occasionally reads back the
+    // stale (or still-clearing) framebuffer on the first pass in software WebGL.
+    v.scene.render();
     v.scene.render();
     const url = canvas.toDataURL("image/jpeg", 0.7);
     v.engine.setSize(savedSize.w, savedSize.h);
