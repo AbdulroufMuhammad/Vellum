@@ -167,20 +167,15 @@ const INSPECT_3D = String.raw`(() => {
   const fill = Math.max(0, Math.max((maxX - minX) / 2, (maxY - minY) / 2));
   const tiny = fill < 0.4;
   // Renders straight from the WebGL canvas at a small size: page screenshots of software WebGL take 10s+ each on the server.
-  window.__vellumView = (i) => {
-    const dirs = [[0, 0.15, 1], [1, 0.15, 0], [0.75, 0.6, 0.75]];
-    const d = new T.Vector3(...dirs[i]).normalize();
-    const r = v.renderer, W = 720, H = 450;
+  // The page's own aspect is kept, so __vellumShot() shows the design's camera as the page frames it.
+  const snap = (aim) => {
+    const r = v.renderer, rect = r.domElement.getBoundingClientRect();
+    const W = 720, H = Math.max(200, Math.min(900, Math.round((W * (rect.height || 450)) / (rect.width || 720))));
     const saved = { size: r.getSize(new T.Vector2()), ratio: r.getPixelRatio(), aspect: cam.aspect, near: cam.near, far: cam.far };
     r.setPixelRatio(1);
     r.setSize(W, H, false);
     if (cam.isPerspectiveCamera) cam.aspect = W / H;
-    const fov = ((cam.fov || 45) * Math.PI) / 180;
-    const hfov = 2 * Math.atan(Math.tan(fov / 2) * (cam.aspect || 1));
-    cam.position.copy(center).addScaledVector(d, (radius / Math.sin(Math.min(fov, hfov) / 2)) * 1.05);
-    cam.lookAt(center);
-    cam.near = Math.min(cam.near, radius / 100);
-    cam.far = Math.max(cam.far, radius * 20);
+    if (aim) aim();
     cam.updateProjectionMatrix();
     r.render(v.scene, cam);
     const url = r.domElement.toDataURL("image/jpeg", 0.7);
@@ -190,6 +185,18 @@ const INSPECT_3D = String.raw`(() => {
     cam.updateProjectionMatrix();
     return url;
   };
+  window.__vellumShot = () => snap(null);
+  window.__vellumView = (i) =>
+    snap(() => {
+      const dirs = [[0, 0.15, 1], [1, 0.15, 0], [0.75, 0.6, 0.75]];
+      const d = new T.Vector3(...dirs[i]).normalize();
+      const fov = ((cam.fov || 45) * Math.PI) / 180;
+      const hfov = 2 * Math.atan(Math.tan(fov / 2) * (cam.aspect || 1));
+      cam.position.copy(center).addScaledVector(d, (radius / Math.sin(Math.min(fov, hfov) / 2)) * 1.05);
+      cam.lookAt(center);
+      cam.near = Math.min(cam.near, radius / 100);
+      cam.far = Math.max(cam.far, radius * 20);
+    });
   return { hook: true, parts: n, floating: floating.slice(0, 6), cutOff: out, tiny, fill: Math.round(fill * 100) / 100 };
 })()`;
 
@@ -330,11 +337,24 @@ async function render(html: string, printTarget: [number, number] | null): Promi
       const info = (await page.evaluate(INSPECT_3D).catch(() => null)) as (Automated["threeD"] & { hook: boolean }) | null;
       if (info?.hook) {
         threeD = { parts: info.parts ?? 0, floating: info.floating ?? [], cutOff: !!info.cutOff, tiny: !!info.tiny, fill: info.fill, hook: true };
+        const fromCanvas = (expr: string) =>
+          page
+            .evaluate(expr)
+            .then((url) => (typeof url === "string" ? url.split(",")[1] ?? "" : ""))
+            .catch(() => "")
+            .then((b64) => (b64.length > 2000 ? Buffer.from(b64, "base64") : null));
+        // No page screenshot (heavy WebGL can time out): the design's own view, rendered from the canvas, stands in.
+        if (!tiles.length) {
+          const shot = await fromCanvas("window.__vellumShot()");
+          if (shot) {
+            tiles.push(shot);
+            laps.push("page shot from the canvas");
+          }
+        }
         for (let i = 0; i < 3 && threeD.parts; i++) {
-          const url = (await page.evaluate(`window.__vellumView(${i})`).catch(() => null)) as string | null;
-          const b64 = typeof url === "string" ? url.split(",")[1] : "";
-          if (!b64 || b64.length < 2000) break;
-          views.push(Buffer.from(b64, "base64"));
+          const shot = await fromCanvas(`window.__vellumView(${i})`);
+          if (!shot) break;
+          views.push(shot);
         }
         lap(`3d(${threeD.parts} parts, ${views.length} views)`);
       } else if (/three/i.test(html)) threeD = { parts: 0, floating: [], cutOff: false, tiny: false, hook: false };
@@ -433,7 +453,7 @@ export async function checkDesign(
       : []),
   ];
   // Never review without a picture: given only the request, the vision model invents problems ("the top isn't visible").
-  if (!tiles.length) {
+  if (!tiles.length && !views.length) {
     return { automated, issues: [], overall: "Couldn't capture a screenshot of this page, so only the automatic checks ran.", reviewer: null, screenshotUrl };
   }
   const reviewUntil = Math.min(opts.deadline - 5_000, Date.now() + REVIEW_TIMEOUT_MS + 5_000);

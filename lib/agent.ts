@@ -4,7 +4,7 @@ import { makeEmitter, type AgentEvent, type Emit } from "@/lib/events";
 import { FILE_TOOL_SCHEMAS, makeFileTools, cleanPath } from "@/lib/tools/files";
 import { SourceRegistry, WEB_TOOL_SCHEMAS } from "@/lib/tools/tavily";
 import { makeRepoTools, REPO_TOOL_SCHEMAS } from "@/lib/tools/github";
-import { finalizeArtifact, removeEmDashes } from "@/lib/finalize";
+import { finalizeArtifact, joinModuleScripts, removeEmDashes, unfinishedDocument } from "@/lib/finalize";
 import { checkDesign, type CheckResult } from "@/lib/tools/visualCheck";
 import { getTemplate } from "@/lib/templates";
 import { extractDesignSystem } from "@/lib/extractDesignSystem";
@@ -988,6 +988,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
               case "append_file":
               case "str_replace": {
                 let w;
+                let merged = false;
                 if (tc.name === "append_file") {
                   const path = cleanPath(args.path);
                   // A finished file already ends in </body></html>; new parts go before that, and the parser tidies the rest.
@@ -995,7 +996,9 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
                     settings.partial?.path === path
                       ? settings.partial.content
                       : (await fileTools.read_file({ path })).content.replace(/<\/body>\s*<\/html>\s*$/i, "");
-                  w = await fileTools.write_file({ path, content: base + String(args.content ?? "") });
+                  const whole = base + String(args.content ?? "");
+                  merged = !unfinishedDocument(whole) && joinModuleScripts(whole) !== whole;
+                  w = await fileTools.write_file({ path, content: whole });
                 } else {
                   w = tc.name === "write_file" ? await fileTools.write_file(args) : await fileTools.str_replace(args);
                 }
@@ -1006,7 +1009,12 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
                 unchecked = w.path;
                 const prev = touched.get(w.path);
                 touched.set(w.path, { version: w.version, created: prev?.created ?? w.created });
-                result = { ok: true, path: w.path, version: w.version };
+                result = {
+                  ok: true,
+                  path: w.path,
+                  version: w.version,
+                  ...(merged ? { note: 'The file had its code in several <script type="module"> blocks that use each other\'s variables; they were merged into one module, so that is already fixed. Carry on, and keep further code in that one script.' } : {}),
+                };
                 summary = { path: w.path, version: w.version, created: w.created };
                 break;
               }
