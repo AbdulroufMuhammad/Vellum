@@ -69,8 +69,10 @@ read-only file, render and export endpoints they use).
   real glTF model from a verified library (Khronos samples, three.js examples)
   when the request matches one; creatures, characters and other sculpted forms
   are built as one continuously blended field with MarchingCubes instead of
-  glued-together parts, so limbs and joints fuse instead of showing a seam.
-  Scenes expose `window.__vellum3d`, and the
+  glued-together parts, so limbs and joints fuse instead of showing a seam;
+  hatches, vents, bolt holes and recessed panels on hard-surface parts are
+  real boolean cuts through the geometry (three-bvh-csg), not decals painted
+  on top. Scenes expose `window.__vellum3d`, and the
   check reports parts that float, a model cut off by the frame or spanning
   under 40% of it (judged from the model's vertices, with floors, backdrops,
   back-side domes and enclosing scenery left out), and photographs it from the
