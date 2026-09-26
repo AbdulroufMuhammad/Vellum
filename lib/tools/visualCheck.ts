@@ -110,14 +110,17 @@ const INSPECT_3D = String.raw`(() => {
     const sz = box.getSize(new T.Vector3());
     (u.ground || sz.y < 1e-4 ? grounds : parts).push({ o, box });
   });
-  // A mesh far bigger than everything else that encloses it (a room, a backdrop) is scenery too.
+  // Scenery (a room, a backdrop dome or sweep) is far bigger than the model AND never touches it,
+  // unlike a real main-body mesh, which is bigger than its small attachments too but they sit on or in it.
   for (let k = 0; k < 3 && parts.length > 1; k++) {
     let bi = 0;
     parts.forEach((p, i) => { if (p.box.getSize(new T.Vector3()).length() > parts[bi].box.getSize(new T.Vector3()).length()) bi = i; });
-    const rest = new T.Box3();
-    parts.forEach((p, i) => { if (i !== bi) rest.union(p.box); });
     const big = parts[bi].box;
-    if (big.getSize(new T.Vector3()).length() > 3 * rest.getSize(new T.Vector3()).length() && big.containsPoint(rest.getCenter(new T.Vector3()))) parts.splice(bi, 1);
+    const rest = parts.filter((_, i) => i !== bi);
+    const restBox = new T.Box3();
+    rest.forEach((p) => restBox.union(p.box));
+    const touchesRest = rest.some((p) => big.intersectsBox(p.box));
+    if (!touchesRest && big.getSize(new T.Vector3()).length() > 3 * restBox.getSize(new T.Vector3()).length() && big.containsPoint(restBox.getCenter(new T.Vector3()))) parts.splice(bi, 1);
     else break;
   }
   if (!parts.length) return { hook: true, parts: 0, floating: [], cutOff: false, tiny: false, fill: 0 };
