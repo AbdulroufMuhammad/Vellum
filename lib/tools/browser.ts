@@ -81,6 +81,8 @@ export async function openDesign(browser: Browser, html: string, viewport: { wid
   });
   await page.setContent(html, { waitUntil: "load", timeout: 20_000 }).catch(() => {});
   await page.evaluate("document.fonts && document.fonts.ready.then(() => true)").catch(() => {});
-  await page.waitForTimeout(600);
+  // A very heavy page (thousands of triangles, WASM CSG) can crash the renderer while it settles;
+  // that isn't this call's problem to throw on, the caller's own page.isClosed() check reports it.
+  await page.waitForTimeout(600).catch(() => {});
   return page;
 }

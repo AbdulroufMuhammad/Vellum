@@ -61,22 +61,28 @@ read-only file, render and export endpoints they use).
   doesn't, the tokens are read from the spec file's CSS variables and fonts
   (`lib/extractDesignSystem.ts`). Later revisions of that spec update the same
   saved system instead of adding copies.
-- **Realistic 3D** — 3D requests get a playbook (`lib/threeD.ts`): plan real
-  dimensions and a parts list with what each part attaches to; build in group
-  hierarchies with lathe, bevelled extrusions, rounded boxes, tubes between
-  real anchor points and instanced repeats; physical materials; HDRI lighting
-  from three.js's example environment maps; a camera fitted to the model; or a
-  real glTF model from a verified library (Khronos samples, three.js examples)
-  when the request matches one; creatures, characters and other sculpted forms
-  are built as one continuously blended field with MarchingCubes instead of
-  glued-together parts, so limbs and joints fuse instead of showing a seam;
-  hatches, vents, bolt holes and recessed panels on hard-surface parts are
-  real boolean cuts through the geometry (three-bvh-csg), not decals painted
-  on top. Scenes expose `window.__vellum3d`, and the
+- **Realistic 3D** — 3D requests get a playbook: plan real dimensions and a
+  parts list with what each part attaches to; build in a hierarchy with lathe,
+  bevelled extrusions, tubes between real anchor points and instanced repeats;
+  physical materials; HDRI lighting; a camera fitted to the model; or a real
+  glTF model from a verified library (Khronos samples, three.js examples) when
+  the request matches one. New builds use **Babylon.js** (`lib/babylon3D.ts`):
+  it needs far less manual setup for a correct-looking result (one call each
+  for shadows, environment lighting and orbit controls) and its CSG2 (the
+  Manifold library) computes real boolean cuts for hatches, vents, bolt holes
+  and recessed panels, batched into one operation per repeated cut rather than
+  chained one at a time, which was measured to make the difference between a
+  check that finishes and one that crashes the browser on a heavy model. Older
+  projects still use three.js (`lib/threeD.ts`, kept for compatibility: the
+  same real-model library and HDRIs, its own MarchingCubes technique for
+  sculpted organic forms, and three-bvh-csg for the same real cuts). Scenes
+  expose `window.__vellumBabylon` or `window.__vellum3d`, and either way the
   check reports parts that float, a model cut off by the frame or spanning
   under 40% of it (judged from the model's vertices, with floors, backdrops,
-  back-side domes and enclosing scenery left out), and photographs it from the
-  front, side and three-quarter view for the reviewer.
+  back-side/culling-off domes and enclosing scenery left out), and photographs
+  it from the front, side and three-quarter view for the reviewer. A renderer
+  crash mid-check (an overloaded scene) is reported to the agent as a plain
+  diagnosis instead of a raw browser error, so it knows to simplify or batch.
 - **One script per page** — if a page built in parts ends up with its code in
   several `<script type="module">` blocks and a later one uses an earlier
   one's variables, writes merge them into one module (each import kept once);

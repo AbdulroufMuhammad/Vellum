@@ -203,6 +203,141 @@ const INSPECT_3D = String.raw`(() => {
   return { hook: true, parts: n, floating: floating.slice(0, 6), cutOff: out, tiny, fill: Math.round(fill * 100) / 100 };
 })()`;
 
+/**
+ * The Babylon.js equivalent of INSPECT_3D, for a scene exposed as
+ * window.__vellumBabylon = { BABYLON, scene, camera, engine }. Same algorithm (floating-group
+ * union-find, the backdrop-must-not-touch-the-model check, vertex-sampled screen fill), adapted to
+ * Babylon's API: scene.meshes instead of traverse, getBoundingInfo()'s world-space box directly
+ * instead of computing one, mesh.metadata instead of userData.
+ */
+const INSPECT_BABYLON = String.raw`(() => {
+  const v = window.__vellumBabylon;
+  if (!v || !v.BABYLON || !v.scene || !v.camera || !v.engine) return { hook: false };
+  const B = v.BABYLON;
+  v.scene.render();
+  const box3 = (min, max) => ({ minx: min.x, miny: min.y, minz: min.z, maxx: max.x, maxy: max.y, maxz: max.z });
+  const union = (a, b) => ({ minx: Math.min(a.minx, b.minx), miny: Math.min(a.miny, b.miny), minz: Math.min(a.minz, b.minz), maxx: Math.max(a.maxx, b.maxx), maxy: Math.max(a.maxy, b.maxy), maxz: Math.max(a.maxz, b.maxz) });
+  const intersects = (a, b) => a.minx <= b.maxx && a.maxx >= b.minx && a.miny <= b.maxy && a.maxy >= b.miny && a.minz <= b.maxz && a.maxz >= b.minz;
+  const contains = (a, p) => p.x >= a.minx && p.x <= a.maxx && p.y >= a.miny && p.y <= a.maxy && p.z >= a.minz && p.z <= a.maxz;
+  const expand = (a, t) => ({ minx: a.minx - t, miny: a.miny - t, minz: a.minz - t, maxx: a.maxx + t, maxy: a.maxy + t, maxz: a.maxz + t });
+  const size = (a) => Math.hypot(a.maxx - a.minx, a.maxy - a.miny, a.maxz - a.minz);
+  const center = (a) => ({ x: (a.minx + a.maxx) / 2, y: (a.miny + a.maxy) / 2, z: (a.minz + a.maxz) / 2 });
+
+  const parts = [], grounds = [];
+  // A skybox/dome rendered from inside sets backFaceCulling = false so its inner surface (facing the
+  // camera) isn't culled; that's Babylon's standard signal for "this is scenery, not a solid object".
+  const backSide = (o) => !!o.material && o.material.backFaceCulling === false;
+  for (const o of v.scene.meshes) {
+    if (!o.isVisible || !o.isEnabled() || !o.getTotalVertices || o.getTotalVertices() === 0 || parts.length > 400) continue;
+    const md = o.metadata || {};
+    // Studio sweeps, sky domes and backdrops are scenery, not the model.
+    if (md.backdrop || md.environment || backSide(o)) continue;
+    o.computeWorldMatrix(true);
+    const bi = o.getBoundingInfo();
+    const box = box3(bi.boundingBox.minimumWorld, bi.boundingBox.maximumWorld);
+    if (!isFinite(box.minx) || !isFinite(box.maxx)) continue;
+    (md.ground || box.maxy - box.miny < 1e-4 ? grounds : parts).push({ o, box });
+  }
+  // Scenery (a room, a backdrop dome or sweep) is far bigger than the model AND never touches it,
+  // unlike a real main-body mesh, which is bigger than its small attachments too but they sit on or in it.
+  for (let k = 0; k < 3 && parts.length > 1; k++) {
+    let bi = 0;
+    parts.forEach((p, i) => { if (size(p.box) > size(parts[bi].box)) bi = i; });
+    const big = parts[bi].box;
+    const rest = parts.filter((_, i) => i !== bi);
+    let restBox = rest[0].box;
+    rest.forEach((p) => (restBox = union(restBox, p.box)));
+    const touchesRest = rest.some((p) => intersects(big, p.box));
+    if (!touchesRest && size(big) > 3 * size(restBox) && contains(big, center(restBox))) parts.splice(bi, 1);
+    else break;
+  }
+  if (!parts.length) return { hook: true, parts: 0, floating: [], cutOff: false, tiny: false, fill: 0 };
+  let all = parts[0].box;
+  parts.forEach((p) => (all = union(all, p.box)));
+  const mid = center(all);
+  const radius = Math.max(1e-3, size(all) / 2);
+  const tol = radius * 0.02;
+  const n = parts.length, parent = parts.map((_, i) => i);
+  const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  const grown = parts.map((p) => expand(p.box, tol));
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) if (intersects(grown[i], parts[j].box)) parent[find(i)] = find(j);
+  const onGround = parts.map((p, i) => grounds.some((g) => intersects(grown[i], g.box)) || p.box.miny <= all.miny + tol);
+  const groups = new Map();
+  for (let i = 0; i < n; i++) { const r = find(i); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(i); }
+  const volume = (idx) => idx.reduce((a, i) => { const b = parts[i].box; return a + Math.max(b.maxx - b.minx, 1e-3) * Math.max(b.maxy - b.miny, 1e-3) * Math.max(b.maxz - b.minz, 1e-3); }, 0);
+  let main = null, best = -1;
+  for (const [r, idx] of groups) { const vol = volume(idx); if (vol > best) { best = vol; main = r; } }
+  const label = (o) => o.name || (o.parent && o.parent.name) || "part";
+  const floating = [];
+  for (const [r, idx] of groups) {
+    if (r === main || idx.some((i) => onGround[i])) continue;
+    const c = center(parts[idx[0]].box);
+    floating.push(idx.slice(0, 3).map((i) => label(parts[i].o)).join(" + ") + " at (" + [c.x, c.y, c.z].map((x) => x.toFixed(2)).join(", ") + ")");
+  }
+  // Where the model's real outline lands on screen: its vertices (sampled), not its bounding box, whose corners stick out past a long or rotated model.
+  const cam = v.camera;
+  const width = v.engine.getRenderWidth(), height = v.engine.getRenderHeight();
+  const viewport = cam.viewport ? cam.viewport.toGlobal(width, height) : new B.Viewport(0, 0, width, height);
+  const xform = v.scene.getTransformMatrix();
+  let minX = 1, maxX = -1, minY = 1, maxY = -1, out = false;
+  const see = (x, y, z) => {
+    const p = B.Vector3.Project(new B.Vector3(x, y, z), B.Matrix.IdentityReadOnly, xform, viewport);
+    if (!isFinite(p.x) || !isFinite(p.y)) return;
+    const nx = (p.x / width) * 2 - 1, ny = (p.y / height) * 2 - 1;
+    if (Math.abs(nx) > 1.02 || Math.abs(ny) > 1.02) out = true;
+    minX = Math.min(minX, nx); maxX = Math.max(maxX, nx); minY = Math.min(minY, ny); maxY = Math.max(maxY, ny);
+  };
+  const isInstance = (o) => (B.InstancedMesh && o instanceof B.InstancedMesh) || o.getTotalVertices() > 20000;
+  for (const { o, box } of parts) {
+    const pos = !isInstance(o) && o.getVerticesData && o.getVerticesData(B.VertexBuffer.PositionKind);
+    if (!pos) {
+      for (const x of [box.minx, box.maxx]) for (const y of [box.miny, box.maxy]) for (const z of [box.minz, box.maxz]) see(x, y, z);
+      continue;
+    }
+    const wm = o.getWorldMatrix();
+    const count = pos.length / 3;
+    const step = Math.max(1, Math.floor(count / 60));
+    const tmp = new B.Vector3();
+    for (let i = 0; i < count; i += step) {
+      B.Vector3.FromArrayToRef(pos, i * 3, tmp);
+      const w = B.Vector3.TransformCoordinates(tmp, wm);
+      see(w.x, w.y, w.z);
+    }
+  }
+  const fill = Math.max(0, Math.max((maxX - minX) / 2, (maxY - minY) / 2));
+  const tiny = fill < 0.4;
+  // Renders straight from the canvas at a small size: page screenshots of software WebGL take 10s+ each on the server.
+  const snap = (aim) => {
+    const canvas = v.engine.getRenderingCanvas();
+    const rect = canvas.getBoundingClientRect();
+    const W = 720, H = Math.max(200, Math.min(900, Math.round((W * (rect.height || 450)) / (rect.width || 720))));
+    const savedSize = { w: v.engine.getRenderWidth(), h: v.engine.getRenderHeight() };
+    v.engine.setSize(W, H);
+    if (aim) aim();
+    v.scene.render();
+    const url = canvas.toDataURL("image/jpeg", 0.7);
+    v.engine.setSize(savedSize.w, savedSize.h);
+    v.scene.render();
+    return url;
+  };
+  window.__vellumShot = () => snap(null);
+  window.__vellumView = (i) =>
+    snap(() => {
+      const dirs = [[0, 0.15, 1], [1, 0.15, 0], [0.75, 0.6, 0.75]];
+      const [dx, dy, dz] = dirs[i];
+      const len = Math.hypot(dx, dy, dz);
+      const fov = cam.fov || 0.8;
+      const dist = (radius / Math.sin(fov / 2)) * 1.05;
+      const pos = new B.Vector3(mid.x + (dx / len) * dist, mid.y + (dy / len) * dist, mid.z + (dz / len) * dist);
+      const target = new B.Vector3(mid.x, mid.y, mid.z);
+      if (cam.setTarget) cam.setTarget(target); else cam.target = target;
+      if (cam.setPosition) cam.setPosition(pos); else cam.position.copyFrom(pos);
+      cam.minZ = Math.min(cam.minZ, radius / 100);
+      cam.maxZ = Math.max(cam.maxZ, radius * 20);
+    });
+  return { hook: true, parts: n, floating: floating.slice(0, 6), cutOff: out, tiny, fill: Math.round(fill * 100) / 100 };
+})()`;
+
 type PageReport = {
   lowContrast: Automated["lowContrast"];
   clippedText: string[];
@@ -303,6 +438,10 @@ async function render(html: string, printTarget: [number, number] | null): Promi
   try {
     const jsErrors: string[] = [];
     const page = await openDesign(browser, html, { width: WIDTH, height: 800 }, (msg) => jsErrors.push(msg));
+    if (page.isClosed())
+      throw new Error(
+        "the page's renderer crashed while it loaded, most likely because the scene is too heavy for the browser to hold at once (a very high triangle count, or many chained CSG boolean cuts computed one at a time instead of batched). Simplify the scene or batch repeated cuts into one operation, then try again."
+      );
     lap("open");
     // Canvas and WebGL scenes: give them a moment to draw, then stop their animation loops. Software WebGL on the
     // server runs at a few frames a second, and an endless render loop starves the screenshots until they time out.
@@ -335,9 +474,12 @@ async function render(html: string, printTarget: [number, number] | null): Promi
       if (shot) tiles.push(shot);
     }
     lap(`screenshots(${tiles.length})`);
-    // 3D scenes: inspect the model and photograph it from three angles (after the page screenshot, which keeps the design's own camera).
-    if (/<canvas|three|webgl/i.test(html)) {
-      const info = (await page.evaluate(INSPECT_3D).catch(() => null)) as (Automated["threeD"] & { hook: boolean }) | null;
+    // 3D scenes (three.js or Babylon.js): inspect the model and photograph it from three angles (after the page screenshot, which keeps the design's own camera).
+    if (/<canvas|three|webgl|babylon/i.test(html)) {
+      const info = (await page
+        .evaluate(INSPECT_3D)
+        .then((r) => (r && (r as { hook?: boolean }).hook ? r : page.evaluate(INSPECT_BABYLON)))
+        .catch(() => null)) as (Automated["threeD"] & { hook: boolean }) | null;
       if (info?.hook) {
         threeD = { parts: info.parts ?? 0, floating: info.floating ?? [], cutOff: !!info.cutOff, tiny: !!info.tiny, fill: info.fill, hook: true };
         const fromCanvas = (expr: string) =>
@@ -360,7 +502,7 @@ async function render(html: string, printTarget: [number, number] | null): Promi
           views.push(shot);
         }
         lap(`3d(${threeD.parts} parts, ${views.length} views)`);
-      } else if (/three/i.test(html)) threeD = { parts: 0, floating: [], cutOff: false, tiny: false, hook: false };
+      } else if (/three|babylon/i.test(html)) threeD = { parts: 0, floating: [], cutOff: false, tiny: false, hook: false };
     }
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForTimeout(300);
@@ -418,7 +560,15 @@ export async function checkDesign(
   // Rendering is capped: a browser that can't start or a page that never settles must not stall the turn.
   // The check step has its own invocation, so it can allow heavy pages (software WebGL) more time.
   const renderCap = Math.min(opts.renderTimeoutMs ?? RENDER_TIMEOUT_MS, Math.max(10_000, opts.deadline - Date.now() - 25_000));
-  const { automated, tiles, printTiles, views } = await withTimeout(render(html, opts.printPages ?? null), renderCap, "the page took too long to render");
+  const { automated, tiles, printTiles, views } = await withTimeout(render(html, opts.printPages ?? null), renderCap, "the page took too long to render").catch((e) => {
+    // Wherever exactly it happens, a page that closes on its own mid-render crashed, not "timed out";
+    // that raw Playwright message means nothing to the model, so it gets a diagnosis it can act on.
+    if (e instanceof Error && /has been closed/i.test(e.message))
+      throw new Error(
+        "the page's renderer crashed partway through, most likely because the scene is too heavy for the browser to hold at once (a very high triangle count, or many chained CSG boolean cuts computed one at a time instead of batched). Simplify the scene or batch repeated cuts into one operation, then try again."
+      );
+    throw e;
+  });
 
   let screenshotUrl: string | null = null;
   if (tiles[0]) {
