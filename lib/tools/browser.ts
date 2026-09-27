@@ -50,16 +50,40 @@ async function reapLeftovers(executable: string) {
 }
 
 /**
- * Each launch makes a profile folder in /tmp that a crashed or killed browser never removes. The serverless /tmp is
- * small (512 MB, with the browser itself unpacked there), and once it fills, printing a PDF fails and then pages
- * crash as they load. With no browser open, none of them is in use.
+ * The serverless /tmp is small (512 MB, about 200 of it the unpacked browser) and the browser leaves things there:
+ * its profile folder, and, with no /dev/shm on the server, its shared memory (.org.chromium.Chromium.*), about 300 MB
+ * after one check of a long document. Once /tmp is full, printing a PDF fails and then pages crash as they load, for
+ * every later check on that warm instance. With no browser open, none of it is in use, so it's all cleared.
  */
+const BROWSER_TEMP = /^(playwright(_chromiumdev_profile|-artifacts)-|\.org\.chromium\.Chromium\.|core\.\d+$)/;
+
 async function clearProfiles() {
   const fs = await import("node:fs/promises");
   const os = await import("node:os");
   const dir = os.tmpdir();
-  const names = (await fs.readdir(dir).catch(() => [] as string[])).filter((n) => /^playwright(_chromiumdev_profile|-artifacts)-/.test(n));
+  const names = (await fs.readdir(dir).catch(() => [] as string[])).filter((n) => BROWSER_TEMP.test(n));
   await Promise.all(names.map((n) => fs.rm(`${dir}/${n}`, { recursive: true, force: true }).catch(() => {})));
+  const free = await tmpFreeMb();
+  if (free != null && free < 150) console.log(`[browser] /tmp still low after cleanup (${free} MB free): ${await biggestInTmp()}`);
+}
+
+/** The largest entries in /tmp, to name whatever else fills it. */
+async function biggestInTmp(): Promise<string> {
+  const fs = await import("node:fs/promises");
+  const os = await import("node:os");
+  const dir = os.tmpdir();
+  const size = async (p: string, depth = 0): Promise<number> => {
+    const st = await fs.lstat(p).catch(() => null);
+    if (!st) return 0;
+    if (!st.isDirectory() || depth > 4) return st.size;
+    const kids = await fs.readdir(p).catch(() => [] as string[]);
+    let total = 0;
+    for (const k of kids.slice(0, 400)) total += await size(`${p}/${k}`, depth + 1);
+    return total;
+  };
+  const entries = await fs.readdir(dir).catch(() => [] as string[]);
+  const sized = await Promise.all(entries.map(async (n) => ({ n, mb: Math.round((await size(`${dir}/${n}`)) / 1048576) })));
+  return sized.sort((a, b) => b.mb - a.mb).slice(0, 6).map((e) => `${e.n} ${e.mb} MB`).join(", ");
 }
 
 /** Free space in the temp folder, in MB, for the check's log line. */
