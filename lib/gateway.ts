@@ -153,6 +153,16 @@ class IdleTimeout extends Error {
 }
 
 /**
+ * A model that collapsed into repeating one character: Kimi K3 on NVIDIA sometimes streams "Ask!!!!!!!!…" and
+ * nothing else, which ended a turn with "I couldn't produce anything". Only runs of ! or ? count, since designs
+ * legitimately contain long runs of =, -, * or # (comment rules, separators).
+ */
+export class DegenerateOutput extends Error {
+  name = "DegenerateOutput";
+}
+const DEGENERATE = /([!?])\1{23,}/;
+
+/**
  * Sampling settings a model insists on, learned from its own errors: some hosted models reject any other value
  * ("`top_p` is immutable for this model and must be 0.95, got 1"). Kept for the life of the server instance.
  */
@@ -215,6 +225,12 @@ async function chatOnce(modelKey: ModelKey, opts: ChatOpts, onFirstByte: () => v
     const dec = new TextDecoder();
     let buf = "";
     let first = true;
+    // The last few dozen characters streamed (thinking and answer), to spot a collapse into one repeated character.
+    let tail = "";
+    const watch = (t: string) => {
+      tail = (tail + t).slice(-48);
+      if (DEGENERATE.test(tail)) throw new DegenerateOutput(`${m.label} started repeating one character instead of answering`);
+    };
 
     while (true) {
       const { value, done } = await reader.read();
@@ -244,10 +260,12 @@ async function chatOnce(modelKey: ModelKey, opts: ChatOpts, onFirstByte: () => v
           onFirstByte();
         }
         if (typeof thought === "string" && thought) {
+          watch(thought);
           out.reasoning += thought;
           opts.onReasoning?.(thought);
         }
         if (d.content) {
+          watch(d.content);
           out.content += d.content;
           opts.onToken?.(d.content);
         }
@@ -273,6 +291,8 @@ async function chatOnce(modelKey: ModelKey, opts: ChatOpts, onFirstByte: () => v
     clearTimeout(idle);
     clearTimeout(hard);
     opts.signal?.removeEventListener("abort", onAbort);
+    // Closes the connection if this attempt stopped reading early (a collapsed stream); a no-op once it's finished.
+    if (!ctrl.signal.aborted) ctrl.abort();
   }
 }
 
@@ -287,13 +307,25 @@ export async function chat(modelKey: ModelKey, opts: ChatOpts): Promise<ChatResu
   const candidates = chain.filter(keyOk);
   if (!candidates.length) candidates.push(modelKey);
   let lastError: unknown;
-  for (const key of candidates) {
+  const retried = new Set<ModelKey>();
+  for (let i = 0; i < candidates.length; i++) {
+    const key = candidates[i];
     if (lastError && opts.deadline - Date.now() < 5000) break;
     let streamed = false;
     try {
       return await chatOnce(key, opts, () => (streamed = true));
     } catch (e) {
       lastError = e;
+      // A collapsed stream is worthless even if it already streamed: try the model once more (it's random), then
+      // the next fallback (unless fallbacks are off).
+      if (e instanceof DegenerateOutput && !opts.signal?.aborted) {
+        console.log(`[gateway] ${MODELS[key].id}: ${e.message}${retried.has(key) ? "" : "; retrying once"}`);
+        if (!retried.has(key)) {
+          retried.add(key);
+          i--;
+        }
+        continue;
+      }
       if (e instanceof GatewayError && (e.status === 401 || e.status === 403)) badKeyUntil.set(MODELS[key].provider, Date.now() + BAD_KEY_MS);
       const timedOut = (e as any)?.name === "TimeoutError";
       const retryable = timedOut || (e instanceof GatewayError && (e.status === 401 || e.status === 403 || e.status === 404 || e.status === 429 || e.status >= 500));
