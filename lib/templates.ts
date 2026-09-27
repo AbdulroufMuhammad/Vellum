@@ -121,7 +121,7 @@ export const TEMPLATES: Template[] = [
       ],
     },
     brief:
-      "An animation that plays on load, built with CSS keyframes, the Web Animations API, canvas or SVG. Include a small replay control. Expose speed/duration and key colors as tweaks so they can be adjusted live.",
+      "An animation that plays on load, built with CSS keyframes, the Web Animations API, canvas or SVG. Include a small replay control. Expose speed/duration and key colors as tweaks so they can be adjusted live. Declare its length with <meta name=\"duration\" content=\"4\"> (seconds, one full play from load to settled, the same convention as <meta name=\"pages\">): it can be exported as an animated GIF (Share → GIF), which captures exactly that many seconds from a fresh load, capped at 6.",
     scope: { question: "How long and complex?", options: ["A 3 to 5 second loop", "A 15 to 30 second sequence", "An interactive, multi-part piece"], default: "A 3 to 5 second loop" },
   },
   {

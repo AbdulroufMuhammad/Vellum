@@ -264,7 +264,7 @@ export function ShareDialog({
   }
 
   /** PNG/PPTX render server-side and can take a few seconds, so show progress and surface errors. */
-  async function download(format: "pdf" | "png" | "pptx", mode?: "image") {
+  async function download(format: "pdf" | "png" | "gif" | "pptx", mode?: "image") {
     if (!path) return;
     setBusy(mode ? `${format}-${mode}` : format);
     setError(null);
@@ -323,6 +323,9 @@ export function ShareDialog({
           </button>
           <button type="button" className="btn-secondary" disabled={!path || !!busy} onClick={() => download("png")}>
             {busy === "png" ? <span className="spinner" /> : <IconDownload size={14} />} PNG
+          </button>
+          <button type="button" className="btn-secondary" disabled={!path || !!busy} onClick={() => download("gif")} title="Its own motion, captured and saved as an animated GIF">
+            {busy === "gif" ? <span className="spinner" /> : <IconDownload size={14} />} GIF
           </button>
           {slides > 0 && (
             <button type="button" className="btn-secondary" disabled={!path || !!busy} onClick={() => download("pptx")} title="Editable text in PowerPoint, Keynote and Google Slides">
