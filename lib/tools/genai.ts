@@ -6,6 +6,7 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { BUCKET } from "./files";
+import { describeImage } from "./vision";
 
 const GENAI_BASE = "https://ai.api.nvidia.com/v1/genai";
 
@@ -41,12 +42,18 @@ const RATIO_SIZE: Record<string, [number, number]> = {
   "2:3": [832, 1216],
 };
 
-/** A real photo or illustration from a text prompt (FLUX.1-dev), stored and returned as a URL to use in an <img> or as a texture. */
+/**
+ * A real photo or illustration from a text prompt (FLUX.1-dev), stored and returned as a URL to use in an
+ * <img> or as a texture. When args.purpose is "reference", also runs the generated image straight back
+ * through the vision model with a proportions/parts/color-zone prompt, so the caller gets concrete visual
+ * grounding (not just a URL it can't itself see) in the same call, before it writes any geometry.
+ */
 export async function generateImage(
   db: SupabaseClient,
   projectId: string,
-  args: { prompt: string; ratio?: string; seed?: number }
-): Promise<{ url: string }> {
+  args: { prompt: string; ratio?: string; seed?: number; purpose?: "photo" | "reference" },
+  visionOpts?: { deadline: number; signal?: AbortSignal }
+): Promise<{ url: string; description?: string }> {
   const [width, height] = RATIO_SIZE[args.ratio ?? "1:1"] ?? RATIO_SIZE["1:1"];
   const png = await callGenAI(
     "black-forest-labs/flux.1-dev",
@@ -56,7 +63,14 @@ export async function generateImage(
   const key = `${projectId}/generated/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
   const { error } = await db.storage.from(BUCKET).upload(key, new Blob([new Uint8Array(png)], { type: "image/jpeg" }), { contentType: "image/jpeg" });
   if (error) throw new Error(`saving the generated image failed: ${error.message}`);
-  return { url: db.storage.from(BUCKET).getPublicUrl(key).data.publicUrl };
+  const url = db.storage.from(BUCKET).getPublicUrl(key).data.publicUrl;
+  if (args.purpose !== "reference" || !visionOpts) return { url };
+  try {
+    const description = await describeImage(url, { deadline: visionOpts.deadline, signal: visionOpts.signal, purpose: "reference" });
+    return { url, description };
+  } catch {
+    return { url };
+  }
 }
 
 /** A real generated 3D mesh (Microsoft TRELLIS) from a text prompt, stored and returned as a .glb URL to load with GLTFLoader/SceneLoader. */
@@ -89,12 +103,13 @@ export const GENAI_TOOL_SCHEMAS = [
     function: {
       name: "generate_image",
       description:
-        "Generate a real AI photo or illustration from a text description (FLUX.1-dev) for use as a design's hero image, photo or texture. Returns a URL; use it directly as an <img src> or CSS background-image. Takes 10-30 seconds.",
+        "Generate a real AI photo or illustration from a text description (FLUX.1-dev). With purpose \"photo\" (default), it's for use as a design's hero image, photo or texture: returns a URL to use directly as an <img src> or CSS background-image. With purpose \"reference\", use it BEFORE building anything with a specific, well-known or branded visual identity (a named character, real vehicle, franchise design, logo) in 3D or in a detailed illustration: it also runs the image back through a vision model with a proportions/parts/color-zone prompt, and returns that description alongside the URL, so you get real visual grounding (exact proportions, part boundaries, color zones) instead of relying on memory alone. Takes 10-30 seconds (a little longer with purpose \"reference\").",
       parameters: {
         type: "object",
         properties: {
           prompt: { type: "string", description: "A detailed visual description: subject, style, lighting, composition." },
           ratio: { type: "string", enum: Object.keys(RATIO_SIZE), description: "Aspect ratio; default 1:1." },
+          purpose: { type: "string", enum: ["photo", "reference"], description: "\"reference\" also returns a proportions/parts/color-zone description for building from. Default \"photo\"." },
         },
         required: ["prompt"],
       },

@@ -49,12 +49,23 @@ read-only file, render and export endpoints they use).
 - **Design agent** (`lib/agent.ts`) — one conversational tool-use loop per
   message. Tools: `write_file` / `str_replace` / `read_file` (versioned HTML
   files), `web_search` / `web_fetch` (Tavily, cited by short source IDs),
-  `repo_tree` / `repo_read` (the connected GitHub codebase), and
-  `ask_questions` (a clarifying form of up to 8 questions, each with the field
-  that fits: single or multiple choice, dropdown, short or long text, number,
-  slider or yes/no; `lib/questions.ts`). It narrates each step,
+  `repo_tree` / `repo_read` (the connected GitHub codebase), `generate_image` /
+  `generate_3d_model` (real AI image and mesh generation, `lib/tools/genai.ts`),
+  and `ask_questions` (a clarifying form of up to 8 questions, each with the
+  field that fits: single or multiple choice, dropdown, short or long text,
+  number, slider or yes/no; `lib/questions.ts`). It narrates each step,
   which the chat shows as activity rows, and the file being written streams to
   the canvas as it's generated.
+- **Real generated images and meshes** (`lib/tools/genai.ts`) — NVIDIA's
+  hosted GenAI endpoints: `generate_image` (FLUX.1-dev) for a genuine photo or
+  illustration, used as a design's hero image, photo or texture; `generate_3d_model`
+  (Microsoft TRELLIS) for a real one-piece mesh (an organic or intricately
+  sculpted object impractical to hand-model), returned as a .glb the same as a
+  library model. Calling `generate_image` with `purpose: "reference"` also runs
+  the image straight back through the vision model with a proportions/parts/
+  color-zone prompt, so the agent gets a concrete visual breakdown, not just a
+  URL it can't itself see: the 3D playbook calls this first, before planning
+  parts, for anything with a specific, well-known or branded visual identity.
 - **Design systems** — when a project makes a design system (the Design system
   template, or asking for one), it's saved to the design system picker and
   applied to the project. The agent saves it with `save_design_system`; if it

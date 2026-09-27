@@ -24,6 +24,8 @@ Aim for a product-render look, not a toy: correct silhouette and proportions, no
 
 Plan (in the plan's sections): the object's real dimensions in metres; a parts list, each with its size, shape technique, material and exactly what it attaches to (parent part and contact point); the camera views that show it best.
 
+Reference first, for anything with a specific, well-known or branded visual identity (a named character or suit, a real vehicle or aircraft, a franchise design) that the user didn't already attach a reference image for: before planning the parts list, call generate_image with purpose "reference" and a prompt naming the exact subject and a clean turnaround/orthographic-style view. Its result gives you a written proportions/parts/color-zone breakdown (not just a URL you can't see), anchored to named parts, e.g. "the chest plate's lower edge sits level with the elbow when the arm hangs straight" or "the gauntlet's color band starts two finger-widths above the wrist joint". Build the parts list and every part's dimensions and color zone from that breakdown, not from memory of the subject's name alone; if the first build's check screenshots don't match it, that breakdown is the concrete standard to diff against and fix to, part by part, rather than guessing at what looks off.
+
 Setup: import Babylon from the CDN as ES modules (no build step, one <script type="module">):
 \`\`\`
 <script type="importmap">{"imports":{"@babylonjs/core":"${BABYLON_CDN}/+esm","@babylonjs/loaders":"https://cdn.jsdelivr.net/npm/@babylonjs/loaders@${BABYLON_VERSION}/+esm"}}</script>

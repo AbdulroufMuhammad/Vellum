@@ -1041,9 +1041,9 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
                 break;
               }
               case "generate_image": {
-                const img = await generateImage(db, projectId, args);
+                const img = await generateImage(db, projectId, args, { deadline, signal });
                 result = img;
-                summary = { url: img.url };
+                summary = img.description ? { url: img.url, description: img.description } : { url: img.url };
                 break;
               }
               case "generate_3d_model": {
