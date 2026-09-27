@@ -451,7 +451,7 @@ async function render(html: string, printTarget: [number, number] | null): Promi
     lap("open");
     // Canvas and WebGL scenes: give them a moment to draw, then stop their animation loops. Software WebGL on the
     // server runs at a few frames a second, and an endless render loop starves the screenshots until they time out.
-    if (/<canvas|three|webgl|requestAnimationFrame/i.test(html)) {
+    if (/<canvas|three\.js|webgl|requestAnimationFrame/i.test(html)) {
       await page.waitForTimeout(2500);
       await page.evaluate("window.requestAnimationFrame = () => 0").catch(() => {});
       await page.waitForTimeout(300);
@@ -481,7 +481,7 @@ async function render(html: string, printTarget: [number, number] | null): Promi
     }
     lap(`screenshots(${tiles.length})`);
     // 3D scenes (three.js or Babylon.js): inspect the model and photograph it from three angles (after the page screenshot, which keeps the design's own camera).
-    if (/<canvas|three|webgl|babylon/i.test(html)) {
+    if (/<canvas|three\.js|webgl|babylon/i.test(html)) {
       const info = (await page
         .evaluate(INSPECT_3D)
         .then((r) => (r && (r as { hook?: boolean }).hook ? r : page.evaluate(INSPECT_BABYLON)))
@@ -508,7 +508,7 @@ async function render(html: string, printTarget: [number, number] | null): Promi
           views.push(shot);
         }
         lap(`3d(${threeD.parts} parts, ${views.length} views)`);
-      } else if (/three|babylon/i.test(html)) threeD = { parts: 0, floating: [], cutOff: false, tiny: false, hook: false };
+      } else if (/three\.js|babylon/i.test(html)) threeD = { parts: 0, floating: [], cutOff: false, tiny: false, hook: false };
     }
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForTimeout(300);
