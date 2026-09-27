@@ -536,8 +536,9 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
       } else delete settings.phase;
     }
     const phase = settings.phase;
-    // A later step of the same request keeps the model that took over, so it doesn't pay the thinking wait again.
-    if (phase && settings.buildModel && !buildModel) buildModel = settings.buildModel;
+    // A later step of the same request keeps the model that took over, so it doesn't pay the thinking wait again
+    // (on a long file that wait was most of each round, leaving seconds to actually edit).
+    if (settings.buildModel && !buildModel) buildModel = settings.buildModel;
     const phaseFresh = !!settings.phaseFresh;
     if (phaseFresh) delete settings.phaseFresh;
     const baseTools = [...WEB_TOOL_SCHEMAS, ...GENAI_TOOL_SCHEMAS, VIDEO_TOOL_SCHEMA, ...(repo ? REPO_TOOL_SCHEMAS : [])];
@@ -641,6 +642,8 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     // The last file written this turn that hasn't been through a browser check yet.
     let unchecked: string | null = settings.pendingCheck ?? null;
     let autoChecks = 0;
+    // Checks that actually ran in this invocation, automatic or the agent's own.
+    let checksRun = 0;
     // A request for a design system isn't done until it's saved to the picker.
     const latestRequest = [...recent].reverse().find((m) => m.role === "user")?.content ?? "";
     const wantsDesignSystem =
@@ -695,6 +698,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
       const c = await checkDesign(db, projectId, f.content, { deadline, signal, request: requestText(), printPages, renderTimeoutMs: phase === "check" || /three|webgl/i.test(f.content) ? 90_000 : undefined });
       // Counted only once it ran: a check the server's browser couldn't finish doesn't use up the file's checks.
       checks.set(f.path, (checks.get(f.path) ?? 0) + 1);
+      checksRun++;
       if (unchecked === f.path) unchecked = null;
       const auto = automatedFindings(c);
       const serious = c.issues.filter((i) => i.severity !== "low");
@@ -871,10 +875,8 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             // Told to act, reasoning models tend to keep deliberating, so a model that doesn't reason builds from the plan.
             if (!buildModel && (buildModel ?? currentModel) !== BUILD_MODEL) {
               buildModel = BUILD_MODEL;
-              if (phase) {
-                settings.buildModel = BUILD_MODEL;
-                await db.from("projects").update({ settings }).eq("id", projectId);
-              }
+              settings.buildModel = BUILD_MODEL;
+              await db.from("projects").update({ settings }).eq("id", projectId);
               await emit({
                 type: "note",
                 payload: {
@@ -954,7 +956,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
           let checkNote = "";
           // Postpone a check to the next round: once if it was never run, and a few more times while each round's check
           // led to fixes (a long document can take a whole round to check and fix), so a short round can never pause forever.
-          const canDefer = !checkDeferred || (autoChecks > 0 && (settings.checkRounds ?? 0) < 3);
+          const canDefer = !checkDeferred || (checksRun > 0 && (settings.checkRounds ?? 0) < 3);
           if (unchecked && !(tooLate && !canDefer)) {
             if (tooLate) {
               settings.checkRounds = (settings.checkRounds ?? 0) + 1;
@@ -1093,6 +1095,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
                   path: w.path,
                   version: w.version,
                   ...(merged ? { note: 'The file had its code in several <script type="module"> blocks that use each other\'s variables; they were merged into one module, so that is already fixed. Carry on, and keep further code in that one script.' } : {}),
+                  ...(w.note ? { note: w.note } : {}),
                 };
                 summary = { path: w.path, version: w.version, created: w.created };
                 break;

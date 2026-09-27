@@ -94,7 +94,25 @@ export function nearestText(content: string, oldStr: string) {
   return null;
 }
 
-export type FileWrite = { path: string; version: number; url: string; created: boolean };
+export type FileWrite = { path: string; version: number; url: string; created: boolean; note?: string };
+
+const STRUCTURAL = ["section", "div", "article", "main", "header", "footer", "aside", "nav", "ul", "ol", "table", "figure", "details", "form", "blockquote"];
+
+/**
+ * Structural tags whose openings and closings don't pair up, as "<section> ×1 unclosed" or
+ * "</div> ×2 extra", ignoring comments and the insides of scripts, styles and text areas.
+ */
+export function unbalancedTags(html: string): string[] {
+  const text = html.replace(/<!--[\s\S]*?-->/g, "").replace(/<(script|style|textarea)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, "");
+  const out: string[] = [];
+  for (const tag of STRUCTURAL) {
+    const open = (text.match(new RegExp(`<${tag}\\b`, "gi")) ?? []).length;
+    const close = (text.match(new RegExp(`</${tag}\\s*>`, "gi")) ?? []).length;
+    if (open > close) out.push(`<${tag}> ×${open - close} unclosed`);
+    else if (close > open) out.push(`</${tag}> ×${close - open} extra`);
+  }
+  return out;
+}
 
 /**
  * Artifact files: bytes in Supabase Storage, one immutable object per
@@ -113,13 +131,25 @@ export function makeFileTools(db: SupabaseClient, projectId: string, transform?:
     return data?.[0] ?? null;
   }
 
-  async function write_file({ path, content }: { path: string; content: string }): Promise<FileWrite> {
+  async function write_file({ path, content }: { path: string; content: string }, opts: { before?: string } = {}): Promise<FileWrite> {
     if (/\.(js|mjs|css|json|ts|tsx|jsx)$/i.test(String(path ?? "").trim()))
       throw new Error("each design is one self-contained HTML file; put scripts and styles inline in it instead of separate files");
     path = cleanPath(path);
     if (typeof content !== "string" || !content.trim()) throw new Error("content is empty");
-    if (transform) content = transform(content);
     const prev = await latest(path);
+    // The finalizing parser "repairs" unpaired tags by deleting them. Mid-edit that silently undid real work: wrapping
+    // a section is two edits (the opening tag, then the closing one), and each came back as a success that changed
+    // nothing. Newly unpaired tags are saved as written instead, and the agent is told to pair them.
+    let note: string | undefined;
+    const unpaired = transform ? unbalancedTags(content) : [];
+    if (unpaired.length) {
+      const before = opts.before ?? (prev ? await read_file({ path }).then((f) => f.content, () => "") : "");
+      if (before && unbalancedTags(before).join() !== unpaired.join()) {
+        note = `Saved exactly as written, because the file's tags don't pair up yet: ${unpaired.join(", ")}. That's fine partway through a change (say, a new wrapper's opening tag now, its closing tag next), but pair them in your next edit; tidying and the other automatic fixes wait until they do.`;
+      } else content = transform!(content);
+    } else if (transform) content = transform(content);
+    if (opts.before !== undefined && content === opts.before)
+      throw new Error("that edit left the file exactly as it was, so nothing changed. read_file the part you meant to change and check your new_str really differs from what's there.");
     const reuse = !!working && !!prev && working.versions[path] === prev.version;
     const version = reuse ? prev!.version : (prev?.version ?? 0) + 1;
     const key = storageKey(projectId, version, path, reuse ? Date.now() : undefined);
@@ -145,7 +175,7 @@ export function makeFileTools(db: SupabaseClient, projectId: string, transform?:
         await working.save();
       }
     }
-    return { path, version, url: db.storage.from(BUCKET).getPublicUrl(key).data.publicUrl, created: !prev };
+    return { path, version, url: db.storage.from(BUCKET).getPublicUrl(key).data.publicUrl, created: !prev, ...(note ? { note } : {}) };
   }
 
   async function read_file({ path, version }: { path: string; version?: number }) {
@@ -174,7 +204,7 @@ export function makeFileTools(db: SupabaseClient, projectId: string, transform?:
       );
     }
     const content = current.content.slice(0, found.start) + String(new_str ?? "") + current.content.slice(found.end);
-    return write_file({ path, content });
+    return write_file({ path, content }, { before: current.content });
   }
 
   return { write_file, read_file, str_replace };
