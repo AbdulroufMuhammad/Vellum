@@ -202,15 +202,15 @@ export const TEMPLATES: Template[] = [
       lead: "Design a cinematic scroll story for ",
       subject: "the launch of a new electric motorcycle",
       steps: [
-        "Ask me whether I'm uploading my own clips or want them generated, plus the art direction, camera style, scenes and whether I want a mobile version.",
-        "Write one style preamble and use it word for word in every image and video prompt so it all reads as one world.",
-        "Use my attached clips in order, one per scene; or render the flight as AI video, each clip starting on the previous clip's actual last frame so every seam is seamless.",
-        "Mount the scroll-world scrub engine so scrolling drives the video's time, with the copy for each scene.",
+        "Ask me whether I'm uploading my own clips, want AI video generated, or want it built as an animation (instant, free, no clips needed), plus the camera style, scenes and whether I want a mobile version.",
+        "Uploaded or AI clips: write one style preamble and use it word for word in every image and video prompt so it all reads as one world. Animation: skip straight to building it.",
+        "Use my attached clips in order, one per scene; or render the flight as AI video, each clip starting on the previous clip's actual last frame so every seam is seamless; or draw the whole flight yourself as one procedural animation and drive its own clock from scroll.",
+        "Mount the scroll engine so scrolling drives the flight's time, with the copy for each scene.",
         "Check the page and fix anything that breaks.",
       ],
     },
     brief:
-      "A scroll-world page: scroll scrubs one continuous camera flight, from the user's attached clips or generate_video clips chained frame to frame, never a slideshow of stills. Follow the Cinematic scroll guide: interview first, one style preamble in every prompt, render the chain before writing the page, then mount the pinned scroll-world scrub engine with a config (sections with clip, still, copy and pacing).",
+      "A scroll-scrubbed page: scroll drives one continuous camera flight through the story, never a slideshow of stills. Follow the Cinematic scroll guide: interview first (clips uploaded, AI video, or an animation you build and scroll-scrub yourself), one style preamble in every image/video prompt if any are generated, then mount the matching engine (scroll-world's pinned scrub engine for real clips, or mountScrollAnimation for an animation) with a config of sections/scenes (copy and pacing).",
     scope: { question: "How long a film?", options: ["Short: 3 to 4 scenes", "Standard: 5 to 6 scenes", "Epic: 7 to 8 scenes"], default: "Standard: 5 to 6 scenes" },
   },
   {

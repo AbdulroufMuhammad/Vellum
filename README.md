@@ -85,26 +85,33 @@ read-only file, render and export endpoints they use).
   number, slider or yes/no; `lib/questions.ts`). It narrates each step,
   which the chat shows as activity rows, and the file being written streams to
   the canvas as it's generated.
-- **Cinematic scroll** (`lib/cinematic.ts`, `lib/tools/video.ts`) — the
-  [scroll-world](https://github.com/AbdulroufMuhammad/scroll-world) technique:
-  scroll drives `video.currentTime` through one continuous AI-generated camera
-  flight. **Users' own clips work today:** attach them in the composer (MP4,
-  WebM or MOV, up to 12, 50 MB each; uploaded straight to Storage through a
-  signed URL, with each clip's first and last frames read in the browser), and
-  the Cinematic scroll template on Home shows exactly what to upload. **AI
-  generation is built but not available yet:** NVIDIA's hosted API offers no
-  image-to-video model to this deployment's key, so `generate_video` stops
-  with a clear message until `COSMOS_URL` points at a self-hosted Cosmos NIM
-  (or a paid provider is wired in). See
-  [docs/video-generation.md](docs/video-generation.md) for what was checked,
-  how to turn it on, and how to verify it. `generate_video` returns each clip
-  with its actual first and last frames (decoded in the server's headless
-  Chromium, no ffmpeg needed), so each leg starts on the previous leg's real
-  last frame and every seam is frame-identical. The page mounts scroll-world's
-  own MIT scrub engine (pinned on jsDelivr) with a config. A clip takes
-  minutes, so the agent renders one per step; a step short on time yields to
-  the next, and everything generated so far in the request (`settings.media`)
-  is handed back on resume so the chain never loses its links.
+- **Cinematic scroll** (`lib/cinematic.ts`, `lib/tools/video.ts`) — scroll
+  drives one continuous flight through the story, three possible sources.
+  **Animated scenes work today, free and instant:** `mountScrollAnimation`
+  (embedded per-project, not an external dependency) lets the agent draw the
+  whole flight itself, canvas 2D and/or Web Animations API timelines over
+  DOM/SVG (the Animation template's own technique, aimed at a scroll-driven
+  clock instead of played on load), with exact seams since the same code
+  draws both sides of every one. This is the template's default while no
+  video model is available. **Users' own clips also work today:** attach them
+  in the composer (MP4, WebM or MOV, up to 12, 50 MB each; uploaded straight
+  to Storage through a signed URL, with each clip's first and last frames
+  read in the browser), and the Cinematic scroll template on Home shows
+  exactly what to upload. **AI video generation is built but not available
+  yet:** NVIDIA's hosted API offers no image-to-video model to this
+  deployment's key, so `generate_video` stops with a clear message until
+  `COSMOS_URL` points at a self-hosted Cosmos NIM (or a paid provider is
+  wired in). See [docs/video-generation.md](docs/video-generation.md) for
+  what was checked, how to turn it on, and how to verify it. For the two
+  video-based sources, the [scroll-world](https://github.com/AbdulroufMuhammad/scroll-world)
+  technique applies: `generate_video` returns each clip with its actual first
+  and last frames (decoded in the server's headless Chromium, no ffmpeg
+  needed), so each leg starts on the previous leg's real last frame and every
+  seam is frame-identical, and the page mounts scroll-world's own MIT scrub
+  engine (pinned on jsDelivr) with a config. A clip takes minutes, so the
+  agent renders one per step; a step short on time yields to the next, and
+  everything generated so far in the request (`settings.media`) is handed
+  back on resume so the chain never loses its links.
 - **Real generated images and meshes** (`lib/tools/genai.ts`) — NVIDIA's
   hosted GenAI endpoints: `generate_image` (FLUX.1-dev) for a genuine photo or
   illustration, used as a design's hero image, photo or texture; `generate_3d_model`

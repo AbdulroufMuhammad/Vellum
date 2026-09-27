@@ -1,16 +1,34 @@
 # Video generation (Cinematic scroll)
 
-**Status: built, not yet available on this deployment.** Everything the Cinematic scroll
-template needs is in place except a source of AI video. The NVIDIA key the app uses has no
-image-to-video model, and the paid providers are on hold for now. Pointing one environment
-variable at a self-hosted model turns it on, with no code change.
+**Status: real AI video isn't available on this deployment; two other paths are, and one of
+them (animated scenes) needs neither AI video nor uploaded footage at all.** The NVIDIA key
+the app uses has no image-to-video model, and the paid providers are on hold for now.
+Pointing one environment variable at a self-hosted model turns AI video on, with no code
+change; until then, the template defaults to the animation path.
 
-## What the feature does
+## The default: animated scenes, no video at all (works today, free, instant)
+
+`mountScrollAnimation` (`lib/cinematic.ts`) is a small mount function the agent embeds
+directly in the page (not an external dependency, unlike scroll-world's engine): the agent
+draws the whole flight itself as one procedural animation, canvas 2D and/or a Web Animations
+API timeline over DOM/SVG (the same technique the Animation template uses), with a known
+total duration, and the mount function sets its own scroll listener that seeks that timeline
+directly from scroll position — the same idea as scrubbing a `<video>`'s `currentTime`, just
+against a self-authored clock instead of a decoded video frame. Because the same code draws
+both sides of every seam, chaining is exact by construction; there's no rendering step, no
+per-clip wait, and no cost. Verified locally: scroll maps linearly across the whole film's
+duration, and each scene's copy overlay crossfades exactly at its scene boundary, at every
+scroll position from 0 to the end (an earlier version of the CSS put the copy layer outside
+the sticky viewport-height box, so it only lined up with the viewport at the very last scroll
+position; it's nested inside that box now).
+
+## What the feature does (the real-video path)
 
 It uses the [scroll-world](https://github.com/AbdulroufMuhammad/scroll-world) technique: scroll
 position drives `video.currentTime` through one continuous AI-generated camera flight, the same
 idea as Apple's scroll-through product pages. The camera really moves; scrolling only moves
-through time.
+through time. (The animated-scenes path above uses the same idea, scrubbing its own clock
+instead of a video's.)
 
 - `generate_video` (`lib/tools/video.ts`) renders one clip from a start image (image-to-video,
   720p, 24 fps) and returns the `.mp4` plus JPEGs of its **actual** first and last frames.
@@ -27,7 +45,7 @@ through time.
 - If no video source works, the agent stops and says so. It never falls back to a slideshow of
   stills.
 
-## Using your own footage (works today)
+## Using your own footage (also works today)
 
 Users can bring their own clips instead: attach them with **+ → Images, videos or files** in
 the composer (MP4 H.264, WebM or MOV, up to 12 per message, 50 MB each). Picking the
