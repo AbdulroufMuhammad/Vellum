@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { TEMPLATES, getTemplate, prefillPrompt, subjectOf } from "@/lib/templates";
+import { CLIP_REQUIREMENTS } from "@/lib/cinematic";
 import type { DesignSystem } from "@/lib/designSystems";
 import type { ModelKey } from "@/lib/gateway";
 import TemplateIcon from "@/components/home/TemplateIcon";
@@ -180,6 +181,18 @@ export default function HomeClient({
               </div>
             )}
           </div>
+          {template === "cinematic" && (
+            <details className="clip-guide" open>
+              <summary>Have your own footage? Attach the clips with + and it's built from them</summary>
+              <ul>
+                {CLIP_REQUIREMENTS.map((r) => (
+                  <li key={r.title}>
+                    <strong>{r.title}.</strong> {r.detail}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
         </div>
         {error && <p className="form-error">{error}</p>}
 

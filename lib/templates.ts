@@ -13,6 +13,9 @@ export type Prefill = {
   steps: string[];
 };
 
+/** How far to take it: the question every new request's form leads with, phrased for this kind of design. */
+export type Scope = { question: string; options: string[]; default: string };
+
 export type Template = {
   id: string;
   label: string;
@@ -20,6 +23,7 @@ export type Template = {
   placeholder?: string;
   prefill?: Prefill;
   brief: string;
+  scope?: Scope;
 };
 
 export const TEMPLATES: Template[] = [
@@ -28,6 +32,7 @@ export const TEMPLATES: Template[] = [
     label: "Blank",
     placeholder: "Describe what you want to create…",
     brief: "No fixed format. Decide the most fitting form for the request.",
+    scope: { question: "How deep should this go?", options: ["Quick and simple", "Standard", "In-depth", "Exhaustive, leave nothing out"], default: "Standard" },
   },
   {
     id: "mobile",
@@ -45,6 +50,7 @@ export const TEMPLATES: Template[] = [
     },
     brief:
       "Mobile app screens. Lay out 3–5 key screens side by side as 390×844 phone frames (rounded corners, status bar, home indicator) on a quiet neutral canvas, each with a small caption above it. Real, specific content, never lorem ipsum. Make primary interactions work (tabs, toggles, navigation between screens) with a little vanilla JS where it's cheap.",
+    scope: { question: "How many screens?", options: ["3 key screens", "5 screens", "The full flow (8 to 12 screens)"], default: "5 screens" },
   },
   {
     id: "slides",
@@ -62,6 +68,7 @@ export const TEMPLATES: Template[] = [
     },
     brief:
       'A slide deck. Each slide is a 1920×1080 <section class="slide">, stacked vertically with a gap and scaled with CSS to fit the viewport width. Include print CSS (@page { size: 1920px 1080px; margin: 0 } and a page break after each slide) so it exports as one slide per page. Arrow keys scroll to the next/previous slide. Present mode in this tool shows one .slide at a time full screen and PowerPoint export captures each .slide as an image, so every slide must stand on its own at 1920×1080. One idea per slide, big type, strong hierarchy; speaker notes go in a data-notes attribute.',
+    scope: { question: "How long a deck?", options: ["Short (5 to 7 slides)", "Standard (10 to 12 slides)", "Deep (15 to 20 slides)", "Full course (25+ slides)"], default: "Standard (10 to 12 slides)" },
   },
   {
     id: "document",
@@ -79,6 +86,7 @@ export const TEMPLATES: Template[] = [
     },
     brief:
       'A printable document. Use US Letter pages (<div class="page"> at 8.5in × 11in with real margins) shown as paper sheets with a soft shadow on a neutral background, plus @page rules so each .page prints as one sheet, and declare the page count with <meta name="pages" content="N">. Editorial typography: a clear type scale, measured line length, running header/footer where it helps.',
+    scope: { question: "How long and deep?", options: ["One page", "Short guide (3 to 5 pages)", "Full handbook (10 to 20 pages)", "Complete reference (30+ pages)"], default: "Short guide (3 to 5 pages)" },
   },
   {
     id: "wireframe",
@@ -96,6 +104,7 @@ export const TEMPLATES: Template[] = [
     },
     brief:
       "Low-fidelity wireframes: grayscale boxes, real labels and copy, simple annotations explaining intent. Show several screens of the flow side by side with arrows or numbered steps between them. No decorative color or imagery.",
+    scope: { question: "How much of the flow?", options: ["The happy path only", "Happy path plus error and empty states", "The full flow with every edge case"], default: "Happy path plus error and empty states" },
   },
   {
     id: "animation",
@@ -113,6 +122,7 @@ export const TEMPLATES: Template[] = [
     },
     brief:
       "An animation that plays on load, built with CSS keyframes, the Web Animations API, canvas or SVG. Include a small replay control. Expose speed/duration and key colors as tweaks so they can be adjusted live.",
+    scope: { question: "How long and complex?", options: ["A 3 to 5 second loop", "A 15 to 30 second sequence", "An interactive, multi-part piece"], default: "A 3 to 5 second loop" },
   },
   {
     id: "ui",
@@ -130,6 +140,7 @@ export const TEMPLATES: Template[] = [
     },
     brief:
       "High-fidelity desktop UI mockups (1440px wide screens) with realistic data. Show the key screens stacked with a label above each, or one interactive prototype with a startScreen tweak that switches between them. Real component states: hover, selected, empty, loading where relevant.",
+    scope: { question: "How many screens?", options: ["2 to 3 key screens", "5 screens", "The full product (8+ screens)"], default: "5 screens" },
   },
   {
     id: "resume",
@@ -146,6 +157,7 @@ export const TEMPLATES: Template[] = [
     },
     brief:
       'A one-page résumé that must print on exactly one US Letter page: <meta name="pages" content="1">, @page { size: Letter; margin: 0.5in }, and on screen a paper sheet 8.5in wide on a neutral backdrop. Clean semantic structure (name, contact, summary, experience, skills, education). A two-column layout stays two columns in print. If it runs long, tighten spacing and type or cut wording until it fits on one page; never spill onto a second page. Refined typography, restrained accent color, no photos or skill bars.',
+    scope: { question: "How much detail?", options: ["Concise: the highlights", "Detailed: every role with achievements"], default: "Detailed: every role with achievements" },
   },
   {
     id: "3d",
@@ -163,6 +175,7 @@ export const TEMPLATES: Template[] = [
     },
     brief:
       "A realistic 3D scene in Babylon.js, product-render quality: real proportions, parts that attach, physical materials, HDRI lighting, soft shadows, a camera fitted to the model and orbit controls. Follow the Realistic 3D guide; use a real model from its library when the request matches one. Expose color, rotation speed and similar as tweaks.",
+    scope: { question: "How detailed?", options: ["Stylized: the key forms", "Realistic: every main part", "Hero detail: every visible part and material"], default: "Realistic: every main part" },
   },
   {
     id: "landing",
@@ -180,6 +193,7 @@ export const TEMPLATES: Template[] = [
     },
     brief:
       "A marketing landing page at a 1440px design width that stays responsive: a hero with a sharp value proposition and primary CTA, social proof, features or how it works, pricing or a comparison where it fits, FAQ and footer. Real, specific copy.",
+    scope: { question: "How much page?", options: ["Just a hero", "A standard landing page (5 to 7 sections)", "Long-form (10+ sections)"], default: "A standard landing page (5 to 7 sections)" },
   },
   {
     id: "cinematic",
@@ -188,15 +202,16 @@ export const TEMPLATES: Template[] = [
       lead: "Design a cinematic scroll story for ",
       subject: "the launch of a new electric motorcycle",
       steps: [
-        "Ask me the art direction, the camera style, the scenes the camera flies through, and whether I want a mobile version.",
+        "Ask me whether I'm uploading my own clips or want them generated, plus the art direction, camera style, scenes and whether I want a mobile version.",
         "Write one style preamble and use it word for word in every image and video prompt so it all reads as one world.",
-        "Render the flight as real AI video: the first scene's image, then one clip per scene, each starting on the previous clip's actual last frame so every seam is seamless.",
+        "Use my attached clips in order, one per scene; or render the flight as AI video, each clip starting on the previous clip's actual last frame so every seam is seamless.",
         "Mount the scroll-world scrub engine so scrolling drives the video's time, with the copy for each scene.",
         "Check the page and fix anything that breaks.",
       ],
     },
     brief:
-      "A scroll-world page: scroll scrubs one continuous AI-generated camera flight (generate_video clips chained frame to frame), never a slideshow of stills. Follow the Cinematic scroll guide: interview first, one style preamble in every prompt, render the chain before writing the page, then mount the pinned scroll-world scrub engine with a config (sections with clip, still, copy and pacing).",
+      "A scroll-world page: scroll scrubs one continuous camera flight, from the user's attached clips or generate_video clips chained frame to frame, never a slideshow of stills. Follow the Cinematic scroll guide: interview first, one style preamble in every prompt, render the chain before writing the page, then mount the pinned scroll-world scrub engine with a config (sections with clip, still, copy and pacing).",
+    scope: { question: "How long a film?", options: ["Short: 3 to 4 scenes", "Standard: 5 to 6 scenes", "Epic: 7 to 8 scenes"], default: "Standard: 5 to 6 scenes" },
   },
   {
     id: "designsystem",
@@ -214,6 +229,7 @@ export const TEMPLATES: Template[] = [
     },
     brief:
       "A design system. If a codebase is connected, extract its real tokens and components from the CSS / Tailwind / theme files instead of inventing them. Make one spec file: color palette with roles and hex values, a type scale using a Google Fonts pairing, spacing and radius scales, and core components (buttons, inputs, cards, navigation, badges) in their states. Then call save_design_system with 5–8 named colors (Background, Surface, Text, Accent, …) and the fonts so it can be picked for future projects.",
+    scope: { question: "How complete?", options: ["Foundations only (color, type, spacing)", "Foundations plus core components", "A full system with patterns and page templates"], default: "Foundations plus core components" },
   },
   {
     id: "research",
@@ -249,6 +265,7 @@ export const TEMPLATES: Template[] = [
     },
     brief:
       "An HTML email: 600px wide, table-based layout with inline styles, bulletproof buttons and web-safe font fallbacks, so it survives real email clients. Show it centered on a light gray backdrop.",
+    scope: { question: "How long?", options: ["A short announcement", "A standard newsletter", "A long digest"], default: "A short announcement" },
   },
   {
     id: "palette",
@@ -266,8 +283,15 @@ export const TEMPLATES: Template[] = [
     },
     brief:
       "A color and type exploration: 3–4 distinct directions, each a specimen card with a Google Fonts pairing (headline + body), a palette with named swatches and hex values, and a small UI sample (button, card, heading) using it.",
+    scope: { question: "How many directions?", options: ["2", "3", "4"], default: "3" },
   },
 ];
+
+/** The scope question for a new request's form. Research asks its own depth question (lib/research.ts). */
+export function scopeQuestion(t: Template) {
+  const sc = t.scope ?? TEMPLATES[0].scope!;
+  return { id: "scope", question: sc.question, type: "single" as const, options: sc.options, default: sc.default, other: true };
+}
 
 export function getTemplate(id: string | null | undefined): Template {
   return TEMPLATES.find((t) => t.id === id) ?? TEMPLATES[0];

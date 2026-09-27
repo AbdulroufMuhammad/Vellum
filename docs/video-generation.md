@@ -27,6 +27,19 @@ through time.
 - If no video source works, the agent stops and says so. It never falls back to a slideshow of
   stills.
 
+## Using your own footage (works today)
+
+Users can bring their own clips instead: attach them with **+ → Images, videos or files** in
+the composer (MP4 H.264, WebM or MOV, up to 12 per message, 50 MB each). Picking the
+**Cinematic scroll** template on Home shows exactly what to upload (`CLIP_REQUIREMENTS` in
+`lib/cinematic.ts`: one clip per scene in order, one continuous camera move each, starting where
+the previous one ended if they should chain, 16:9, 4 to 8 seconds). Clips upload straight from
+the browser to Supabase Storage through a signed URL (`/api/uploads/video`), because a
+serverless request body can't carry them. The browser reads each clip's length, size and first
+and last frames as it uploads, so there's no server-side decoding and any codec the user's
+browser plays works. The agent then builds the page from the clips in order, with no
+generation.
+
 ## Why it doesn't work yet (checked 2026-09-27)
 
 - NVIDIA's catalog lists **cosmos3-nano** (image-to-video), but its documented hosted route

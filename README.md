@@ -73,7 +73,11 @@ read-only file, render and export endpoints they use).
 - **Cinematic scroll** (`lib/cinematic.ts`, `lib/tools/video.ts`) — the
   [scroll-world](https://github.com/AbdulroufMuhammad/scroll-world) technique:
   scroll drives `video.currentTime` through one continuous AI-generated camera
-  flight. **Built, but not available yet:** NVIDIA's hosted API offers no
+  flight. **Users' own clips work today:** attach them in the composer (MP4,
+  WebM or MOV, up to 12, 50 MB each; uploaded straight to Storage through a
+  signed URL, with each clip's first and last frames read in the browser), and
+  the Cinematic scroll template on Home shows exactly what to upload. **AI
+  generation is built but not available yet:** NVIDIA's hosted API offers no
   image-to-video model to this deployment's key, so `generate_video` stops
   with a clear message until `COSMOS_URL` points at a self-hosted Cosmos NIM
   (or a paid provider is wired in). See
@@ -176,6 +180,13 @@ read-only file, render and export endpoints they use).
   straight into the composer, or dictate with the mic button.
 - **Comments** — each comment stays pinned to its element (numbered pins in
   Comment mode) with the agent's reply, until you resolve it.
+- **Ask first** — every new request (on any template and any model) opens
+  with a short form before anything is designed: how deep to go (a scope
+  question phrased per template in `lib/templates.ts`, e.g. slide count, page
+  count, number of screens, level of 3D detail), what type or style, and what
+  the request leaves open. Design tools are blocked until it's asked; the form
+  has "Skip, use your judgement". Small edits, element comments and messages
+  that say not to ask go straight through.
 - **Research depth** — a research project is scoped first with a form that
   always asks how deep to go (quick overview, standard report or deep dive,
   `lib/research.ts`); the choice sets the sources read per turn and the

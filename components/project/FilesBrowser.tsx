@@ -5,7 +5,7 @@ import type { FileEntry, StoredMessage } from "@/lib/projectData";
 import type { Attachment } from "@/components/ui/Attachments";
 import { IconClose, IconFile, IconRefresh } from "@/components/ui/Icons";
 
-type Upload = { name: string; kind: "image" | "text" | "folder"; url?: string; at: string; pending?: boolean };
+type Upload = { name: string; kind: "image" | "text" | "folder" | "video"; url?: string; poster?: string; at: string; pending?: boolean };
 
 function ago(iso: string) {
   const s = (Date.now() - new Date(iso).getTime()) / 1000;
@@ -64,9 +64,9 @@ export default function FilesBrowser({
   const uploads = useMemo<Upload[]>(() => {
     const out: Upload[] = [];
     for (const m of messages) {
-      for (const a of (m.meta?.attachments ?? []) as Attachment[]) out.push({ name: a.name, kind: a.kind ?? "text", url: a.url, at: m.created_at });
+      for (const a of (m.meta?.attachments ?? []) as Attachment[]) out.push({ name: a.name, kind: a.kind ?? "text", url: a.url, poster: a.first_frame_url, at: m.created_at });
     }
-    for (const a of pending) out.push({ name: a.name, kind: a.kind ?? "text", url: a.url, at: new Date().toISOString(), pending: true });
+    for (const a of pending) out.push({ name: a.name, kind: a.kind ?? "text", url: a.url, poster: a.first_frame_url, at: new Date().toISOString(), pending: true });
     return out.reverse();
   }, [messages, pending]);
 
@@ -137,10 +137,10 @@ export default function FilesBrowser({
           {uploads.length === 0 && <p className="fb-empty">Nothing uploaded yet. Drop images or files here, paste, or make a sketch.</p>}
           {uploads.map((u, i) => (
             <button key={`${u.name}-${i}`} type="button" className={`fb-row${selected?.type === "upload" && selected.index === i ? " on" : ""}`} onClick={() => setSelected({ type: "upload", index: i })}>
-              <span className={`fb-icon ${u.kind}`}>{u.kind === "image" && u.url ? <img src={u.url} alt="" /> : <IconFile size={15} />}</span>
+              <span className={`fb-icon ${u.kind}`}>{u.kind === "image" && u.url ? <img src={u.url} alt="" /> : u.kind === "video" && u.poster ? <img src={u.poster} alt="" /> : <IconFile size={15} />}</span>
               <span className="fb-name">
                 {u.name}
-                <small>{u.kind === "image" ? (/^sketch/i.test(u.name) ? "Sketch" : "Image") : u.kind === "folder" ? "Code folder" : "Text"}{u.pending ? " · attached to your next message" : ""}</small>
+                <small>{u.kind === "image" ? (/^sketch/i.test(u.name) ? "Sketch" : "Image") : u.kind === "folder" ? "Code folder" : u.kind === "video" ? "Video clip" : "Text"}{u.pending ? " · attached to your next message" : ""}</small>
               </span>
               <span className="fb-time" suppressHydrationWarning>
                 {u.pending ? "" : ago(u.at)}
@@ -170,7 +170,7 @@ export default function FilesBrowser({
             </>
           ) : up ? (
             <>
-              <div className="fb-thumb image">{up.kind === "image" && up.url ? <img src={up.url} alt={up.name} /> : <IconFile size={28} />}</div>
+              <div className="fb-thumb image">{up.kind === "image" && up.url ? <img src={up.url} alt={up.name} /> : up.kind === "video" && up.url ? <video src={up.url} poster={up.poster} controls muted playsInline /> : <IconFile size={28} />}</div>
               <div className="fb-meta">
                 <strong>{up.name}</strong>
                 <span className="muted">{up.pending ? "Attached to your next message" : "Sent to the agent as context"}</span>

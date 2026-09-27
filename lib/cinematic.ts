@@ -10,6 +10,16 @@
  * the next scene's exact first frame) needs end-frame conditioning and isn't offered.
  */
 
+/** What a user's own clips must be, shown on Home with the Cinematic scroll template and given to the agent. */
+export const CLIP_REQUIREMENTS: { title: string; detail: string }[] = [
+  { title: "One clip per scene", detail: "3 to 8 clips (5 is a good default), in the order the camera travels. Name them 01-…, 02-… so they sort into order." },
+  { title: "One continuous camera move each", detail: "A slow push-in, glide, orbit or drone flight with no cuts inside the clip." },
+  { title: "Seamless if they chain", detail: "Start each clip exactly where the previous one ended (same framing), e.g. one long take split into parts. Otherwise scenes dissolve into each other." },
+  { title: "Format", detail: "MP4 (H.264), 16:9 landscape at 1920×1080 or 1280×720, 4 to 8 seconds, under 50 MB each. Sound isn't needed; the page is muted." },
+  { title: "Steady and slow", detail: "Smooth, slow motion scrubs best. Avoid shaky handheld footage, fast pans, flashes and text on screen." },
+  { title: "Optional: phone versions", detail: "A matching set shot or cropped as 9:16 portrait, in the same order, for a native mobile version." },
+];
+
 export const SCRUB_ENGINE_URL =
   "https://cdn.jsdelivr.net/gh/AbdulroufMuhammad/scroll-world@71cc36d/skills/scroll-world/references/scrub-engine.js";
 
@@ -23,9 +33,14 @@ export function isCinematicRequest(templateId: string, text: string): boolean {
 /** The agent's playbook for scroll-scrubbed camera-flight pages. */
 export function cinematicGuide() {
   return `## Cinematic scroll (scroll-world): scroll scrubs a real camera flight
-The page plays one continuous AI-generated camera flight through the story, and scroll position drives the video's time: scroll down and the camera flies forward, scroll up and it flies back. It is video from start to finish, never a slideshow of stills with crossfades or Ken Burns zooms (that is the wrong technique; don't build it). The clips come from generate_video; the page is scroll-world's own scrub engine plus a config.
+The page plays one continuous camera flight through the story, and scroll position drives the video's time: scroll down and the camera flies forward, scroll up and it flies back. It is video from start to finish, never a slideshow of stills with crossfades or Ken Burns zooms (that is the wrong technique; don't build it). The clips are either the user's own uploads or generated with generate_video; the page is scroll-world's own scrub engine plus a config.
+
+### 0. The user's own clips (use these whenever they're attached)
+If the user attached video clips, build from them: skip generation entirely (no generate_image, no generate_video) and go straight to step 4. Use the clips in the order given (attachment order, which follows their file names), one scene each: clip = the clip's url, still = its first frame. Write the copy for each scene from what the user said and the clip's name. If a clip is portrait (height greater than width) and the others are landscape, use it as that scene's clipMobile/stillMobile instead of a scene of its own. If no clips are attached and generate_video isn't available, ask the user to upload them, and put exactly what's needed in the form's intro or your reply:
+${CLIP_REQUIREMENTS.map((r) => `- ${r.title}: ${r.detail}`).join("\n")}
 
 ### 1. Interview first (ask_questions), unless the request already answers it
+- Where the clips come from (single, first question, unless clips are already attached): "I'll upload my own clips" or "Generate them with AI". If they'll upload, the form's intro lists what to upload (above) and you build once they've attached them.
 - Subject: if the request doesn't clearly name the business or idea, ask openly (text field), never with made-up multiple choice.
 - Art direction (single, with Other; it becomes the style preamble repeated verbatim in every prompt): "Clay diorama: isometric low-poly diorama, soft matte clay render, rounded toy-model shapes, warm studio light, tilt-shift miniature", "Papercraft: isometric layered paper-craft diorama, matte cardstock, die-cut edges", "Photoreal architectural: ultra-photorealistic architectural photography, cinematic wide-angle, warm golden-hour light, natural materials, editorial magazine quality, no people", "Cinematic live action: photorealistic cinematic film still, anamorphic lens, shallow depth of field, rich color grade", "Neon night: miniature world at night, warm interior glow and neon signage, moody rim light, wet reflective ground".
 - Camera style (single, always ask, it's the film's personality): "One continuous walkthrough: a single forward flight that glides through each scene straight into the next" (default; the only fully seamless option), "Locked isometric glide: one fixed high angle for the whole film, the world slides past beneath it" (calmest), "Scene dives: the camera dives into each scene from its own still, with a short dissolve between scenes" (each scene matches its still exactly, but the joins are dissolves, not one unbroken take).

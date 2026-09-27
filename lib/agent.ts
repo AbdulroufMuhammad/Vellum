@@ -8,7 +8,7 @@ import { VIDEO_TOOL_SCHEMA, generateVideo } from "@/lib/tools/video";
 import { makeRepoTools, REPO_TOOL_SCHEMAS } from "@/lib/tools/github";
 import { finalizeArtifact, joinModuleScripts, removeEmDashes, unfinishedDocument } from "@/lib/finalize";
 import { checkDesign, type CheckResult } from "@/lib/tools/visualCheck";
-import { getTemplate } from "@/lib/templates";
+import { getTemplate, scopeQuestion } from "@/lib/templates";
 import { extractDesignSystem } from "@/lib/extractDesignSystem";
 import { ASK_PARAMETERS, cleanQuestions } from "@/lib/questions";
 import { DEFAULT_DEPTH, depthFrom, withDepthQuestion } from "@/lib/research";
@@ -227,7 +227,7 @@ function systemPrompt(opts: { templateBrief: string; designSystem: string; codeb
 ## How you work
 - Think briefly and practically: decide the direction, then build. Don't deliberate at length over details (exact pixel values, alternatives you won't use); the first version can be refined after it's on the canvas.
 - Before each batch of tool calls, write one short line (under 12 words) saying what you're doing, as a present participle, e.g. "Picking a font pairing and accent color." It appears as a progress row.
-- If a request leaves important choices open (what it's for, audience, content, features or sections needed, tone, format), call ask_questions with a proper form instead of guessing: ask everything you actually need in one go (usually 3–6 questions), each with the field type that fits. Use single for one-of choices, multi (checkboxes) for picking several, like features, sections or pages needed, select for a long list, text for names and specifics, long for descriptions, number or slider for quantities (e.g. how many screens or slides), and toggle for yes/no. Give concrete options, not vague ones, and preselect a sensible default where one is obvious. If the request is already specific enough, just start designing. Never ask twice in a row; once answered, design with what you have and decide anything left open yourself.
+- If a request leaves important choices open (what it's for, audience, content, features or sections needed, tone, format), call ask_questions with a proper form instead of guessing: ask everything you actually need in one go (usually 3–6 questions), each with the field type that fits. Use single for one-of choices, multi (checkboxes) for picking several, like features, sections or pages needed, select for a long list, text for names and specifics, long for descriptions, number or slider for quantities (e.g. how many screens or slides), and toggle for yes/no. Give concrete options, not vague ones, and preselect a sensible default where one is obvious. Every new request opens with such a form (you'll be told when); for follow-ups, ask only when something essential is unclear. Never ask twice in a row; once answered, or skipped, design with what you have and decide anything left open yourself.
 - Every file you write is checked automatically in a real browser before your reply reaches the user, and any real problems come back to you to fix. You can also call check_design yourself mid-way. When problems come back, fix them directly; don't ask the user.
 - If the user asks you to create, extract or define a design system, make a visual spec file for it (palette with roles and hex values, type scale, spacing/radius, core components in their states) and call save_design_system so it becomes reusable.
 - When the user comments on a specific element, you get its HTML; change that element and leave the rest alone.
@@ -403,6 +403,8 @@ function describeUserMessage(m: { content: string; meta: any }, full: boolean) {
   for (const a of meta.attachments ?? []) {
     if (a.kind === "image") {
       text += `\n\n(Attached image "${a.name}". Use it in the design with <img src="${a.url}"> if it belongs there.${a.description ? ` What it shows: ${a.description}` : ""})`;
+    } else if (a.kind === "video") {
+      text += `\n\n(Attached video clip "${a.name}": ${a.url} , ${a.seconds ?? "?"}s, ${a.width ?? "?"}×${a.height ?? "?"}. Its first frame: ${a.first_frame_url ?? "none"} ; its last frame: ${a.last_frame_url ?? "none"}. Use the clip as-is (never regenerate it) and the first frame as its poster.)`;
     } else if (a.kind === "folder") {
       text += full && a.content ? `\n\nAttached local code folder "${a.name}", the UI files of their codebase. Match its visual language:\n${String(a.content).slice(0, 120000)}` : `\n\n(Attached code folder "${a.name}")`;
     } else {
@@ -501,13 +503,17 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     const repo = project.codebase ? makeRepoTools(project.codebase) : null;
     // A new design (or a big request) is split into plan, build and check, each its own invocation.
     const newest = (history ?? []).find((m) => m.role === "user");
+    const big = files.length === 0 || template.id === "research" || String(newest?.content ?? "").length > 280;
+    const isEdit = !!newest?.meta?.target;
+    // Every new request (not a small edit, a comment on an element, or the answers themselves) starts with a form:
+    // how deep to go, what type or style, and whatever else the request leaves open. The user can skip it.
+    const optedOut = /\b(don'?t|do not|no need to) ask|no questions|skip (the )?questions|just (build|make|do) it\b/i.test(String(newest?.content ?? ""));
+    const mustAsk = !opts.resume && big && !isEdit && !newest?.meta?.answers && !optedOut && template.id !== "research";
     if (!opts.resume) {
-      const big = files.length === 0 || template.id === "research" || String(newest?.content ?? "").length > 280;
-      const isEdit = !!newest?.meta?.target;
       delete settings.plan;
       delete settings.buildReply;
       delete settings.buildModel;
-      if (big && !isEdit && !mustScope) {
+      if (big && !isEdit && !mustScope && !mustAsk) {
         settings.phase = "plan";
         settings.phaseFresh = true;
       } else delete settings.phase;
@@ -572,7 +578,10 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
         context += `\nThe user is looking at "${active.path}" (too long to include, so read_file it before editing).`;
       }
     }
-    if (mustScope) {
+    if (mustAsk) {
+      const sq = scopeQuestion(template);
+      context += `\n\n## First: ask\nThis is a new request, so before designing, researching or planning anything, call ask_questions, then stop and wait for the answers. The form must include, in this order: (1) id "scope": "${sq.question}" (single, options ${sq.options.map((o) => `"${o}"`).join(", ")}, default "${sq.default}"); (2) the type or style it should take (single, 3 to 5 concrete options specific to this request, with Other); then (3) 1 to 4 more questions about what this particular request leaves open (audience, content to include, tone, must-haves). Use what the request already answers as defaults instead of asking it again. The form has a "Skip, use your judgement" button, so keep it short.`;
+    } else if (mustScope) {
       context +=
         "\n\nThis is a new research request. Before any searching, call ask_questions to scope it: the form always includes how deep to go (which sets the report's length), so add 2 to 4 questions specific to this topic, such as the focus areas to cover (multi), who it's for, the time period or region, and anything to include or leave out.";
     } else if (depth) {
@@ -1010,6 +1019,8 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             await emit({ type: "tool-call", payload: { callId, name: tc.name, args: shown } });
 
             let summary: Record<string, unknown> = {};
+            if (mustAsk && !asked && !["ask_questions", "read_file", "repo_tree", "repo_read"].includes(tc.name))
+              throw new Error("This is a new request: call ask_questions first (scope, type or style, and what the request leaves open), then stop and wait for the answers.");
             switch (tc.name) {
               case "write_file":
               case "append_file":
@@ -1129,7 +1140,8 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
               }
               case "ask_questions": {
                 const cleaned = cleanQuestions(args.questions);
-                const questions = template.id === "research" ? withDepthQuestion(cleaned) : cleaned;
+                const questions =
+                  template.id === "research" ? withDepthQuestion(cleaned) : mustAsk && !cleaned.some((q) => q.id === "scope" || /\bhow (deep|long|many|detailed|complete|much)\b/i.test(q.question)) ? [scopeQuestion(template), ...cleaned].slice(0, 8) : cleaned;
                 if (!questions.length) throw new Error("no questions given");
                 await emit({ type: "questions", payload: { intro: String(args.intro ?? "").slice(0, 300), questions } });
                 result = { ok: true, note: "The user will answer in their next message." };
