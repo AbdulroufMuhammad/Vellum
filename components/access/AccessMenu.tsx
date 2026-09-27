@@ -46,6 +46,16 @@ export default function AccessMenu() {
               Access keys
             </MenuItem>
           )}
+          {me?.kind === "main" && (
+            <MenuItem
+              onClick={() => {
+                close();
+                window.location.assign("/access/models");
+              }}
+            >
+              Models
+            </MenuItem>
+          )}
           {me?.kind && (
             <MenuItem danger onClick={signOut}>
               Sign out

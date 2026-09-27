@@ -1,7 +1,18 @@
 // Raw HTTP model gateway — no vendor SDK. Both providers serve an
 // OpenAI-format /chat/completions endpoint, so one client covers both.
 
-export type ModelKey = "glm" | "glm-flash" | "muse" | "omni" | "deepseek";
+export type ModelKey =
+  | "glm"
+  | "glm-flash"
+  | "muse"
+  | "omni"
+  | "deepseek"
+  | "gpt-oss"
+  | "kimi"
+  | "mistral-nemotron"
+  | "nemotron-super"
+  | "nemotron-lightning"
+  | "gemma";
 
 type ModelConfig = {
   id: string;
@@ -12,12 +23,20 @@ type ModelConfig = {
   top_p: number;
   max_tokens: number;
   extra?: Record<string, unknown>;
+  /** False for a model that's only ever used internally (vision description), never offered as a build model. */
+  buildable?: boolean;
 };
 
 export const MODELS: Record<ModelKey, ModelConfig> = {
   glm: { id: "z-ai/glm-5.3", label: "GLM 5.3", note: "Best quality", provider: "nvidia", temperature: 0.6, top_p: 1, max_tokens: 16384 },
   "glm-flash": { id: "z-ai/glm-5.3-flash", label: "GLM 5.3 Flash", note: "Faster, lighter", provider: "nvidia", temperature: 0.6, top_p: 1, max_tokens: 16384 },
   deepseek: { id: "deepseek-chat", label: "DeepSeek V3", note: "DeepSeek API", provider: "deepseek", temperature: 0.6, top_p: 1, max_tokens: 8192 },
+  "gpt-oss": { id: "openai/gpt-oss-20b", label: "GPT-OSS 20B", note: "Open-weight, agentic", provider: "nvidia", temperature: 0.7, top_p: 1, max_tokens: 16384 },
+  kimi: { id: "moonshotai/kimi-k3", label: "Kimi K3", note: "Long context", provider: "nvidia", temperature: 0.6, top_p: 1, max_tokens: 16384 },
+  "mistral-nemotron": { id: "mistralai/mistral-nemotron", label: "Mistral Nemotron", note: "Agentic workflows", provider: "nvidia", temperature: 0.6, top_p: 1, max_tokens: 16384 },
+  "nemotron-super": { id: "nvidia/nemotron-3-super-120b-a12b", label: "Nemotron 3 Super", note: "Large MoE, high quality", provider: "nvidia", temperature: 0.6, top_p: 0.95, max_tokens: 16384 },
+  "nemotron-lightning": { id: "nvidia/nemotron-3.5-lightning-30b-a3b", label: "Nemotron 3.5 Lightning", note: "Fast MoE", provider: "nvidia", temperature: 0.6, top_p: 0.95, max_tokens: 16384 },
+  gemma: { id: "google/gemma-4-31b-it", label: "Gemma 4", note: "Google, 256K context", provider: "nvidia", temperature: 0.7, top_p: 0.95, max_tokens: 16384 },
   omni: {
     id: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
     label: "Nemotron Omni",
@@ -27,11 +46,14 @@ export const MODELS: Record<ModelKey, ModelConfig> = {
     top_p: 0.95,
     max_tokens: 32768,
     extra: { reasoning_budget: 8192 },
+    buildable: false,
   },
-  muse: { id: "meta/muse-glimmer-30b", label: "Muse Glimmer", note: "Sees images", provider: "nvidia", temperature: 0.9, top_p: 0.95, max_tokens: 8192 },
+  muse: { id: "meta/muse-glimmer-30b", label: "Muse Glimmer", note: "Sees images", provider: "nvidia", temperature: 0.9, top_p: 0.95, max_tokens: 8192, buildable: false },
 };
 
 export const MODEL_KEYS = Object.keys(MODELS) as ModelKey[];
+/** Models fit to pick as a project's build model, i.e. everything except the vision-only helpers. */
+export const BUILDABLE_MODEL_KEYS = MODEL_KEYS.filter((k) => MODELS[k].buildable !== false);
 
 /** Projects created before the model picker stored "quality" / "fast" profiles. */
 export function modelKeyFor(stored: string | null | undefined): ModelKey {
@@ -46,6 +68,12 @@ export const FALLBACKS: Record<ModelKey, ModelKey[]> = {
   deepseek: ["glm-flash", "glm"],
   omni: ["glm-flash", "glm"],
   muse: ["glm-flash", "glm"],
+  "gpt-oss": ["glm-flash", "glm"],
+  kimi: ["glm-flash", "glm"],
+  "mistral-nemotron": ["glm-flash", "glm"],
+  "nemotron-super": ["glm-flash", "glm"],
+  "nemotron-lightning": ["glm-flash", "glm"],
+  gemma: ["glm-flash", "glm"],
 };
 
 const KEY_ENV = { nvidia: "NVIDIA_API_KEY", deepseek: "DEEPSEEK_API_KEY" } as const;

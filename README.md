@@ -31,6 +31,15 @@ read-only file, render and export endpoints they use).
 - Entering a key sets a signed, httpOnly session cookie (`middleware.ts`,
   `lib/accessKeys.ts`, `lib/accessServer.ts`). Without `MAIN_ACCESS_KEY` a
   deployment stays locked; local development stays open.
+- **Models** (avatar menu → Models, `/access/models`, main key only): which
+  build models show up in the Model picker. `lib/gateway.ts`'s `MODELS`
+  registry holds every model this app can call (GLM 5.3, GLM 5.3 Flash,
+  DeepSeek V3, and free NVIDIA NIM models: GPT-OSS 20B, Kimi K3, Mistral
+  Nemotron, Nemotron 3 Super, Nemotron 3.5 Lightning, Gemma 4; Nemotron Omni
+  and Muse Glimmer are vision-only and never offered as a build model). The
+  enabled subset is saved to the `app_settings` table (`lib/modelSettings.ts`)
+  and read by both Home and the project page; a project already using a model
+  that's since been disabled keeps it selectable.
 
 ## How it works
 

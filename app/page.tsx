@@ -1,6 +1,6 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { fromRow } from "@/lib/designSystems";
-import { MODEL_KEYS, MODELS } from "@/lib/gateway";
+import { getModelOptions } from "@/lib/modelSettings";
 import HomeClient from "@/components/home/HomeClient";
 
 // Lists live projects — never frozen at build time or served from a cached fetch.
@@ -10,13 +10,14 @@ export const fetchCache = "force-no-store";
 
 export default async function HomePage({ searchParams }: { searchParams: { ds?: string } }) {
   const admin = createAdminClient();
-  const [{ data: projects }, { data: dsRows }] = await Promise.all([
+  const [{ data: projects }, { data: dsRows }, models] = await Promise.all([
     admin.from("projects").select("id, title, template, status, updated_at").order("updated_at", { ascending: false }).limit(60),
     admin
       .from("design_systems")
       .select("*")
       .order("owner_id", { ascending: true, nullsFirst: true })
       .order("created_at", { ascending: true }),
+    getModelOptions(admin),
   ]);
 
   // The most recently written file of each project becomes its thumbnail.
@@ -35,7 +36,7 @@ export default async function HomePage({ searchParams }: { searchParams: { ds?: 
   return (
     <HomeClient
       systems={(dsRows ?? []).map(fromRow)}
-      models={MODEL_KEYS.map((key) => ({ key, label: MODELS[key].label, note: MODELS[key].note }))}
+      models={models}
       initialDs={searchParams.ds ?? null}
       projects={(projects ?? []).map((p) => ({
         ...p,

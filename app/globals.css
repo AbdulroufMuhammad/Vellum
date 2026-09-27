@@ -499,6 +499,15 @@ button.avatar { cursor: pointer; }
 .keys-status.off { color: var(--muted); }
 .danger-text { color: var(--danger) !important; height: 28px !important; }
 .mono { font-family: var(--font-mono); }
+.models-list { display: flex; flex-direction: column; border: 1px solid var(--line-2); border-radius: 12px; overflow: hidden; font-size: 13.5px; }
+.models-row { display: grid; grid-template-columns: 24px 1fr 1fr; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--line); cursor: pointer; }
+.models-row:first-child { border-top: 0; }
+.models-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
+.models-name { font-weight: 500; }
+@media (max-width: 560px) {
+  .models-row { grid-template-columns: 20px 1fr; }
+  .models-row .muted { grid-column: 2; }
+}
 @media (max-width: 720px) {
   .keys-row { grid-template-columns: 1fr 1fr; }
   .keys-row.head { display: none; }
