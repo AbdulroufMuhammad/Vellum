@@ -55,7 +55,26 @@ async function reapLeftovers(executable: string) {
  * after one check of a long document. Once /tmp is full, printing a PDF fails and then pages crash as they load, for
  * every later check on that warm instance. With no browser open, none of it is in use, so it's all cleared.
  */
-const BROWSER_TEMP = /^(playwright(_chromiumdev_profile|-artifacts)-|\.org\.chromium\.Chromium\.|core\.\d+$)/;
+const BROWSER_TEMP = /^(playwright(_chromiumdev_profile|-artifacts)-|\.org\.chromium\.Chromium\.|core(\.|$))/;
+
+/**
+ * The serverless browser tends to crash as it exits, and each crash wrote a core dump the size of its memory
+ * (core.chromium.N, about 300 MB) into /tmp: one dump filled it, and every later check crashed. The browser is
+ * started through a one-line shell wrapper that turns core dumps off (the limit carries to the browser, as exec
+ * replaces the shell). If the wrapper can't be made, the browser starts directly.
+ */
+async function withoutCoreDumps(executable: string): Promise<string> {
+  try {
+    const fs = await import("node:fs/promises");
+    const os = await import("node:os");
+    const wrapper = `${os.tmpdir()}/chromium-nocore.sh`;
+    const script = `#!/bin/sh\nulimit -c 0\nexec "${executable}" "$@"\n`;
+    if ((await fs.readFile(wrapper, "utf8").catch(() => "")) !== script) await fs.writeFile(wrapper, script, { mode: 0o755 });
+    return wrapper;
+  } catch {
+    return executable;
+  }
+}
 
 async function clearProfiles() {
   const fs = await import("node:fs/promises");
@@ -129,7 +148,7 @@ export async function launchBrowser(): Promise<Browser> {
     try {
       // A small disk cache (the default allows 32 MB per launch) keeps /tmp free for the browser's own work.
       const args = [...sparticuz.args.filter((a) => !a.startsWith("--disk-cache-size")), "--disk-cache-size=4194304", ...WEBGL_ARGS];
-      return tracked(await chromium.launch({ executablePath, args, headless: true }), executablePath);
+      return tracked(await chromium.launch({ executablePath: await withoutCoreDumps(executablePath), args, headless: true }), executablePath);
     } catch (e) {
       openBrowsers--;
       throw e;
