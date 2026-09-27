@@ -70,13 +70,19 @@ read-only file, render and export endpoints they use).
   number, slider or yes/no; `lib/questions.ts`). It narrates each step,
   which the chat shows as activity rows, and the file being written streams to
   the canvas as it's generated.
-- **Cinematic scroll** (`lib/cinematic.ts`) — a request for a scroll-driven,
-  parallax, scrollytelling or "fly-through" cinematic page gets its own
-  playbook: break the story into scenes, generate a real AI still per scene
-  (a shared style phrase keeps them one continuous world) plus a foreground
-  layer where a scene needs depth, and scroll-scrub them with position: sticky
-  sections, scroll-linked Ken Burns zoom/drift and parallax, crossfading into
-  the next scene, all from one HTML file with no external video pipeline.
+- **Cinematic scroll** (`lib/cinematic.ts`, `lib/tools/video.ts`) — the
+  [scroll-world](https://github.com/AbdulroufMuhammad/scroll-world) technique:
+  scroll drives `video.currentTime` through one continuous AI-generated camera
+  flight. `generate_video` renders each clip with NVIDIA Cosmos3 Nano
+  (image-to-video, 720p/24fps, same `NVIDIA_API_KEY`) and returns it with its
+  actual first and last frames (decoded in the server's headless Chromium, no
+  ffmpeg needed), so each leg starts on the previous leg's real last frame and
+  every seam is frame-identical. The page mounts scroll-world's own MIT scrub
+  engine (pinned on jsDelivr: blob-loaded clips, seek coalescing, lazy loading,
+  phone hardening, reduced motion) with a config. A clip takes minutes, so the
+  agent renders one per step; with too little time left a step yields and the
+  next continues, and everything generated so far in the request
+  (`settings.media`) is handed back on resume so the chain never loses its links.
 - **Real generated images and meshes** (`lib/tools/genai.ts`) — NVIDIA's
   hosted GenAI endpoints: `generate_image` (FLUX.1-dev) for a genuine photo or
   illustration, used as a design's hero image, photo or texture; `generate_3d_model`

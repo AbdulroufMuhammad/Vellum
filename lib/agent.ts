@@ -4,6 +4,7 @@ import { makeEmitter, type AgentEvent, type Emit } from "@/lib/events";
 import { FILE_TOOL_SCHEMAS, makeFileTools, cleanPath } from "@/lib/tools/files";
 import { SourceRegistry, WEB_TOOL_SCHEMAS } from "@/lib/tools/tavily";
 import { GENAI_TOOL_SCHEMAS, generateImage, generateMesh3D } from "@/lib/tools/genai";
+import { VIDEO_TOOL_SCHEMA, generateVideo } from "@/lib/tools/video";
 import { makeRepoTools, REPO_TOOL_SCHEMAS } from "@/lib/tools/github";
 import { finalizeArtifact, joinModuleScripts, removeEmDashes, unfinishedDocument } from "@/lib/finalize";
 import { checkDesign, type CheckResult } from "@/lib/tools/visualCheck";
@@ -39,6 +40,8 @@ class ThinkLimit extends Error {
 const MAX_ACTIVE_FILE_CHARS = 60_000;
 // A browser check needs this much turn time left: ~35s to render, ~45s to review, plus the fix that follows.
 const CHECK_MIN_MS = 90_000;
+// A clip renders in one to three minutes; with less than this left, the invocation yields and the next one renders it.
+const VIDEO_MIN_MS = 170_000;
 
 const ASK_SCHEMA: ToolSchema = {
   type: "function",
@@ -315,6 +318,12 @@ type ProjectSettings = {
   /** The design system this project made and saved to the picker, and its spec file; revisions to that file update it. */
   savedDesignSystemId?: string;
   designSystemFile?: string;
+  /**
+   * Images, clips and meshes generated during this request. Tool results don't survive a time-limit pause (a resumed
+   * invocation rebuilds the conversation from chat messages), so a clip chain spanning several invocations would
+   * otherwise lose its own links; this is handed back on resume. Cleared when a new request starts.
+   */
+  media?: { tool: string; prompt: string; url: string; first_frame_url?: string; last_frame_url?: string }[];
 };
 type HistoryMessage = { id: string; role: string; content: string; meta: any; created_at: string };
 
@@ -476,7 +485,10 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     // The printed page count the automatic check holds the design to (a file can also declare its own with <meta name="pages">).
     const printPages: [number, number] | null = template.id === "resume" ? [1, 1] : depth ? depth.pages : null;
     // A new request starts fresh versions; resumed steps of the same request keep updating the same ones.
-    if (!opts.resume) delete settings.workingVersions;
+    if (!opts.resume) {
+      delete settings.workingVersions;
+      delete settings.media;
+    }
     const workingVersions = (settings.workingVersions ??= {});
     const fileTools = makeFileTools(db, projectId, (html) => finalizeArtifact(html, sources.sources), {
       versions: workingVersions,
@@ -503,7 +515,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     if (phase && settings.buildModel && !buildModel) buildModel = settings.buildModel;
     const phaseFresh = !!settings.phaseFresh;
     if (phaseFresh) delete settings.phaseFresh;
-    const baseTools = [...WEB_TOOL_SCHEMAS, ...GENAI_TOOL_SCHEMAS, ...(repo ? REPO_TOOL_SCHEMAS : [])];
+    const baseTools = [...WEB_TOOL_SCHEMAS, ...GENAI_TOOL_SCHEMAS, VIDEO_TOOL_SCHEMA, ...(repo ? REPO_TOOL_SCHEMAS : [])];
     const tools: ToolSchema[] =
       // A half-written file always needs the file tools, whatever the step.
       phase === "plan" && !settings.partial
@@ -577,6 +589,14 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
       context += `\n\n## This step: checking\nThe design was built from this plan:\n"""\n${planText(settings.plan)}\n"""`;
     }
     if (opts.resume && !phaseFresh) context += "\n\nYou were interrupted by a time limit partway through this request. Continue from where the files are now; don't start over.";
+    if (settings.media?.length) {
+      context += `\n\nAlready generated during this request (use these; never regenerate one that's listed):\n${settings.media
+        .map((m, i) => {
+          const frames = m.last_frame_url ? ` first_frame_url=${m.first_frame_url} last_frame_url=${m.last_frame_url}` : "";
+          return `${i + 1}. ${m.tool}: ${m.url}${frames}\n   prompt: ${m.prompt.slice(0, 220)}`;
+        })
+        .join("\n")}`;
+    }
     if (settings.pendingCheck && !settings.partial) {
       context += `\n\n"${settings.pendingCheck}" is written; it only still needs its browser check, which runs automatically once you reply. Unless something else is unfinished, just reply in one sentence.`;
     }
@@ -950,6 +970,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
 
         let asked = false;
         let planned = false;
+        let yieldForVideo = false;
         for (const [i, tc] of r.toolCalls.entries()) {
           const callId = `${step}-${i}-${tc.id || ""}`;
           const toolCallId = tc.id || `call_${step}_${i}`;
@@ -1046,6 +1067,20 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
                 const img = await generateImage(db, projectId, args, { deadline, signal });
                 result = img;
                 summary = img.description ? { url: img.url, description: img.description } : { url: img.url };
+                (settings.media ??= []).push({ tool: "generate_image", prompt: String(args.prompt ?? ""), url: img.url });
+                await db.from("projects").update({ settings }).eq("id", projectId);
+                break;
+              }
+              case "generate_video": {
+                if (deadline - Date.now() < VIDEO_MIN_MS) {
+                  yieldForVideo = true;
+                  throw new Error("Not enough time left in this step to render a clip, so this step ends here and the next one starts with a full time budget. Call generate_video again with the same arguments first thing.");
+                }
+                const clip = await generateVideo(db, projectId, args, { deadline, signal });
+                result = clip;
+                summary = { url: clip.url, image: clip.first_frame_url };
+                (settings.media ??= []).push({ tool: "generate_video", prompt: String(args.prompt ?? ""), url: clip.url, first_frame_url: clip.first_frame_url, last_frame_url: clip.last_frame_url });
+                await db.from("projects").update({ settings }).eq("id", projectId);
                 break;
               }
               case "generate_3d_model": {
@@ -1116,8 +1151,8 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
         }
         await touch();
         if (asked) break;
-        // The plan is in: this invocation ends and the build step starts fresh, with its own time budget.
-        if (planned) {
+        // The plan is in (or a clip needs more time than is left): this invocation ends and the next starts fresh, with its own time budget.
+        if (planned || yieldForVideo) {
           status = "paused";
           await emit({ type: "continue", payload: {} });
           break;

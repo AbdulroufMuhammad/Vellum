@@ -188,15 +188,15 @@ export const TEMPLATES: Template[] = [
       lead: "Design a cinematic scroll story for ",
       subject: "the launch of a new electric motorcycle",
       steps: [
-        "Break it into 5 to 8 scenes with a real beginning, middle and turn, not just a list of sections.",
-        "Write one shared visual style phrase (lighting, color grade, medium) and generate a real AI still for every scene, plus a foreground layer for any scene that needs depth.",
-        "Build the scroll-scrub structure: sticky full-screen scenes with scroll-linked zoom, drift and parallax, crossfading into the next scene.",
-        "Time each scene's copy to appear once its images have resolved and leave before the crossfade.",
-        "Scroll through it slowly and fix anything that jumps, stutters or resolves too early or late.",
+        "Ask me the art direction, the camera style, the scenes the camera flies through, and whether I want a mobile version.",
+        "Write one style preamble and use it word for word in every image and video prompt so it all reads as one world.",
+        "Render the flight as real AI video: the first scene's image, then one clip per scene, each starting on the previous clip's actual last frame so every seam is seamless.",
+        "Mount the scroll-world scrub engine so scrolling drives the video's time, with the copy for each scene.",
+        "Check the page and fix anything that breaks.",
       ],
     },
     brief:
-      "A scroll-driven cinematic page built from real AI-generated stills (generate_image), never static hero images or gradients standing in for them: 5-8 scenes as position: sticky full-screen sections with scroll-linked Ken Burns zoom, parallax depth and crossfade between scenes, following the Cinematic scroll guide's markup and scroll-scrub engine. One shared style phrase keeps every generated still part of the same world. A real story with a beginning, middle and turn; timed copy per scene.",
+      "A scroll-world page: scroll scrubs one continuous AI-generated camera flight (generate_video clips chained frame to frame), never a slideshow of stills. Follow the Cinematic scroll guide: interview first, one style preamble in every prompt, render the chain before writing the page, then mount the pinned scroll-world scrub engine with a config (sections with clip, still, copy and pacing).",
   },
   {
     id: "designsystem",

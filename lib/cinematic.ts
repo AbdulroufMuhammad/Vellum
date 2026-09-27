@@ -1,71 +1,86 @@
 /**
- * Scroll-driven cinematic pages: real AI-generated stills (generate_image), layered and crossfaded
- * with scroll-linked Ken Burns and parallax motion, instead of static hero images. This app has no
- * connected video-generation account (the technique this is adapted from, seen in AbdulroufMuhammad's
- * scroll-world repo, drives its motion with real AI-generated video "dive-in" clips from paid
- * Monid/Higgsfield accounts), so the achievable version here fakes camera-move depth with layered
- * stills and CSS transforms driven by scroll position, in one self-contained HTML file.
+ * Scroll-scrubbed camera-flight pages, the scroll-world technique (github.com/AbdulroufMuhammad/scroll-world):
+ * scroll drives video.currentTime through real AI-generated camera-flight clips, chained so each clip starts on
+ * the previous clip's actual last frame. The camera genuinely moves; scroll only drives time (the technique behind
+ * Apple's scroll-through product pages). Clips come from generate_video (NVIDIA Cosmos image-to-video), and the
+ * page mounts scroll-world's own MIT-licensed scrub engine, pinned on jsDelivr, rather than re-deriving it.
+ *
+ * Cosmos conditions on a first frame only (no end frame), so the chain is scroll-world's architecture A: one
+ * continuous forward take whose legs hand off real frames. Its architecture B (aerial connectors that land on
+ * the next scene's exact first frame) needs end-frame conditioning and isn't offered.
  */
 
-const TRIGGER = /\b(cinematic|scroll[- ]?driven|scroll[- ]?scrub|scrollytelling|parallax|fly[- ]?through|dive[- ]?in|product film|scroll story)\b/i;
+export const SCRUB_ENGINE_URL =
+  "https://cdn.jsdelivr.net/gh/AbdulroufMuhammad/scroll-world@71cc36d/skills/scroll-world/references/scrub-engine.js";
 
-/** Whether the request calls for a scroll-driven cinematic treatment, worth adding this guide for. */
+const TRIGGER = /\b(cinematic|scroll[- ]?driven|scroll[- ]?scrub|scrollytelling|parallax|fly[- ]?through|dive[- ]?in|product film|scroll story|scroll[- ]?world)\b/i;
+
+/** Whether the request calls for a scroll-scrubbed cinematic page, worth adding this guide for. */
 export function isCinematicRequest(templateId: string, text: string): boolean {
   return templateId === "cinematic" || TRIGGER.test(text);
 }
 
-/** The agent's playbook for scroll-driven cinematic pages built from generated stills. */
+/** The agent's playbook for scroll-scrubbed camera-flight pages. */
 export function cinematicGuide() {
-  return `## Cinematic scroll (AI stills, not static images)
-Scroll-world (the technique this is adapted from) opens with a short interview before generating anything: subject and pitch, art direction, the ordered scenes, whether a mobile version is wanted, and the render tier. Do the same here with ask_questions before building, unless the request already answers these: the visual style/art direction (single choice, options like "Cinematic photography", "Isometric diorama", "Editorial illustration", "Moody film noir", "Bright product studio", plus Other), roughly how many scenes (slider or number, 5-8), and whether they also want a mobile-optimized 9:16 version alongside the desktop one (toggle). The chosen style becomes the one shared style phrase appended to every scene's generate_image prompt, so pick concrete, specific wording from their answer rather than a vague label.
+  return `## Cinematic scroll (scroll-world): scroll scrubs a real camera flight
+The page plays one continuous AI-generated camera flight through the story, and scroll position drives the video's time: scroll down and the camera flies forward, scroll up and it flies back. It is video from start to finish, never a slideshow of stills with crossfades or Ken Burns zooms (that is the wrong technique; don't build it). The clips come from generate_video; the page is scroll-world's own scrub engine plus a config.
 
-Break the story into 5-8 scenes (a sequence of moments, not sections of a normal page). For each scene, call generate_image for a real still: this template exists specifically to use real generated photography, so unlike most other designs, inline SVG or CSS-gradient illustration standing in for a scene's image is not an acceptable substitute here, even though it's normally a perfectly good choice. Write one shared style phrase (lighting, color grade, medium, e.g. "cinematic, volumetric light, teal and amber grade, shot on 35mm") and append it to every scene's prompt so all the stills read as one continuous world, not unrelated pictures. Where a scene needs foreground depth, generate a second image for it: same style phrase, prompt it for a single foreground subject on a plain dark or transparent-reading background, so it can be layered over the background still. If check_design ever reports one of these images as broken or failing to load, that's a real bug to find and fix (or a call to retry with generate_image), never a reason to delete the image and fall back to SVG.
+### 1. Interview first (ask_questions), unless the request already answers it
+- Subject: if the request doesn't clearly name the business or idea, ask openly (text field), never with made-up multiple choice.
+- Art direction (single, with Other; it becomes the style preamble repeated verbatim in every prompt): "Clay diorama: isometric low-poly diorama, soft matte clay render, rounded toy-model shapes, warm studio light, tilt-shift miniature", "Papercraft: isometric layered paper-craft diorama, matte cardstock, die-cut edges", "Photoreal architectural: ultra-photorealistic architectural photography, cinematic wide-angle, warm golden-hour light, natural materials, editorial magazine quality, no people", "Cinematic live action: photorealistic cinematic film still, anamorphic lens, shallow depth of field, rich color grade", "Neon night: miniature world at night, warm interior glow and neon signage, moody rim light, wet reflective ground".
+- Camera style (single, always ask, it's the film's personality): "One continuous walkthrough: a single forward flight that glides through each scene straight into the next" (default; the only fully seamless option), "Locked isometric glide: one fixed high angle for the whole film, the world slides past beneath it" (calmest), "Scene dives: the camera dives into each scene from its own still, with a short dissolve between scenes" (each scene matches its still exactly, but the joins are dissolves, not one unbroken take).
+- The journey: 4 to 6 scenes in order, drawn from the subject's own value chain (e.g. farm, roastery, cafe, first pour). Propose them in the form so the user can edit.
+- Mobile version (toggle, always ask): a second chain rendered natively in 9:16 portrait, which doubles the clips to render. Default no.
+Say in the form's intro that each clip takes 1 to 3 minutes to render, so a 5-scene film is roughly 5 to 15 minutes of rendering, spread automatically across steps.
 
-Structure: one tall wrapper, height = number of scenes * 100vh (or more per scene for a slower scrub). Each scene is a position: sticky; top: 0; height: 100vh; div holding its layered <img>s, in DOM order, each pinned inside the same 100vh viewport window as the wrapper scrolls past it; this is what makes it feel scrubbed rather than a normal one-per-screen scroll. Preload every scene's images before the page is interactive (new Image().src for each, or await decode()) so the first scroll never shows a blank frame.
+### 2. The style preamble
+Write one preamble from the chosen art direction plus the palette (4 to 6 named hex values) and "absolutely no text, no letters, no logos". Repeat it byte for byte in every generate_image and generate_video prompt. This identical text is what makes every clip one world. Compose every scene with its focal subject centred with a little headroom (the page shows clips object-fit: cover).
 
-Drive motion from scroll position, not from time or hover:
-- On scroll (rAF-throttled, one listener), compute each scene's progress: (viewportMidpoint - sceneTop) / sceneHeight, clamped 0 to 1.
-- Ken Burns: transform: scale(1 + t * 0.12) translateY(t * -30px) on the background still (t = progress); a slow, continuous zoom/drift reads as camera movement even on a static image.
-- Parallax depth: a foreground layer moves faster than the background (translateY(t * -80px) vs the background's -30px) so they separate in depth as the scene scrubs.
-- Crossfade between scenes: over the last ~25% of a scene's progress, fade its opacity from 1 to 0 while the next scene (already sticky underneath) is reaching its own early progress at full opacity; this is the connector moment, the one scroll-world gets from a frame-locked video clip, done here as a plain opacity blend between two stills.
-- Only animate transform and opacity (never layout properties): set will-change: transform, opacity on the animated layers so it stays smooth.
+### 3. Render the chain (one generate_video per step, before writing any file)
+Each clip takes minutes, so call generate_video once per step, on its own, and render all clips before writing the page. If a step has too little time left it ends and the next one continues; the clips already rendered are listed back to you, so never regenerate one.
 
-Copy sits in its own layer above the images (a heading, a short line, sometimes nothing) with its own scroll-linked fade/rise, timed to appear after the scene's images have mostly resolved (progress > 0.15) and leave before the crossfade starts.
+Walkthrough or locked isometric glide (one continuous forward take):
+- generate_image the first scene only: [preamble]. Subject: [scene 1]. Ratio 16:9.
+- Leg 1: generate_video with start_image = that image's url.
+- Leg i (2..N): generate_video with start_image = leg i-1's last_frame_url. Never use a still for these; handing over the real last frame is what makes every seam frame-identical.
+- Leg prompt, keeping the two bold clauses word for word (they are the motion-handoff contract that keeps the camera from reversing at a seam, which reads as a rewind stutter): "Single continuous cinematic camera move, no cuts. **Continue the same slow, steady forward glide.** [MID-LEG MOVE] The camera moves into [scene i] toward [its focal point]. **In the final second, settle back into a slow, steady forward glide toward [the opening or direction of scene i+1].** [preamble]. Smooth, graceful, slow motion, subtle parallax. No text, no captions." For leg 1, start with "Begin wide, looking at the whole [scene 1]." instead of the first bold clause; the last leg ends by settling on the finale's hero subject.
+- Mid-leg move, chosen from the concept (a reversal inside one clip is fine; only a seam may never reverse): product or luxury, "sweeping in a slow half-orbit around [the hero object], keeping it centred, then continuing past it"; spaces and scale, "rising smoothly as the full scale of [the space] reveals below"; production and process, "tracking low and level alongside [the line], foreground objects sliding past in parallax"; craft and food, "pushing in close to [the craft moment] until it nearly fills the frame, then easing gently back out"; outdoors, "climbing in a gentle arc over [the terrain], then swooping down toward [the next focal point]". Locked isometric glide replaces the move with: "The camera keeps exactly the same high isometric angle throughout, no rotation, no orbit, no tilt; it only travels straight and level, the world sliding past beneath the same view."
+- Seconds: 5 per leg (6 to 8 for the hero or finale scene).
 
-Keep it to a real story with a beginning, middle and turn, matching the request's product or narrative; never generate filler scenes just to hit a count.
+Scene dives:
+- generate_image every scene (same preamble, ratio 16:9), then for each scene generate_video with start_image = that scene's own image and: "Single continuous cinematic camera move, no cuts. Begin wide, looking at the whole [scene]. The camera glides forward and descends toward [focal point], as if flying inside. [preamble]. Smooth, graceful, slow motion, subtle parallax. No text, no captions."
 
-If a mobile version was requested: generate a second still per scene with ratio "9:16" (same prompt and style phrase, reframed for a tall crop) rather than stretching the desktop image, and pick which set of URLs to preload and use based on a matchMedia("(max-width: 640px)") check made once before the preload starts, not per frame.
+Mobile (only if asked): repeat the same chain with ratio "9:16": a 9:16 first image, then legs chained from their own 9:16 last frames, never from the desktop chain's frames.
 
-Markup and scroll-scrub engine, adapt directly rather than freehanding the math (one rAF-throttled scroll listener drives every scene, so it stays smooth with any number of scenes):
+If generate_video refuses a prompt (a content filter), reword it (drop anything that could read as unsafe, add "empty, unoccupied, architectural") and retry once; if it still fails, leave that clip out and let the engine dissolve across the gap.
+
+### 4. The page
+The whole design is the engine, a container and a config. Don't write your own scroll, scrub or crossfade code, and don't hand-copy the engine: load it from its pinned URL.
 \`\`\`html
-<div class="reel" style="height: calc(var(--scenes) * 100vh)">
-  <section class="scene" data-scene="0"><img class="bg" src="…"><img class="fg" src="…"><div class="copy"><h2>…</h2></div></section>
-  <!-- one .scene per generated still, in order -->
-</div>
+<div id="world"></div>
+<script src="${SCRUB_ENGINE_URL}"></script>
 <script>
-  const scenes = [...document.querySelectorAll(".scene")];
-  document.documentElement.style.setProperty("--scenes", scenes.length);
-  function onScroll() {
-    const mid = window.scrollY + window.innerHeight / 2;
-    for (const el of scenes) {
-      const top = el.offsetTop, h = el.offsetHeight;
-      const t = Math.min(1, Math.max(0, (mid - top) / h));
-      const bg = el.querySelector(".bg"), fg = el.querySelector(".fg"), copy = el.querySelector(".copy");
-      if (bg) bg.style.transform = \`scale(\${1 + t * 0.12}) translateY(\${t * -30}px)\`;
-      if (fg) fg.style.transform = \`translateY(\${t * -80}px)\`;
-      const fadeOut = Math.max(0, (t - 0.75) / 0.25);
-      el.style.opacity = String(1 - fadeOut);
-      if (copy) copy.style.opacity = String(Math.min(1, t / 0.15) * (1 - Math.min(1, t / 0.6)));
-    }
-  }
-  let ticking = false;
-  window.addEventListener("scroll", () => {
-    if (ticking) return;
-    ticking = true;
-    requestAnimationFrame(() => { onScroll(); ticking = false; });
-  }, { passive: true });
-  onScroll();
+  mountScrollWorld(document.getElementById("world"), {
+    brand: { name: "Brand Name" },
+    hint: "scroll to fly in",
+    diveScroll: 1.4,          // viewport heights of scroll per clip
+    crossfade: 0.08,          // walkthrough: a tiny seam dissolve; scene dives: 0.14
+    sections: [
+      { id: "farm", label: "The Farm", clip: LEG1.url, still: LEG1.first_frame_url,
+        // mobile only: clipMobile: M_LEG1.url, stillMobile: M_LEG1.first_frame_url,
+        accent: "#8FB98A", eyebrow: "From leaf to last sip", title: "It starts in the hills.",
+        body: "One sentence from the visitor's side.", tags: ["Single-origin", "Hand-picked"],
+        scroll: 1.8, linger: 0.4 },   // optional: longer dwell, camera settles while the copy peaks
+      // ...one per clip, in order; the last also carries
+      // cta: { primary: { label: "Order now", href: "#" }, secondary: { label: "Visit us", href: "#" } }
+    ],
+    connectors: [],           // always empty here: the legs themselves are the journey
+  });
 </script>
 \`\`\`
-\`.scene\` is \`position: sticky; top: 0; height: 100vh; overflow: hidden\` with \`.bg\`/\`.fg\` absolutely filling it (\`will-change: transform\`) and \`.copy\` centered above them; \`.reel\` is the tall scroll container. Adjust the constants (0.12 zoom, -30px/-80px drift, the 0.75-1 fade window) to the story's pacing, and add more layers per scene if a moment needs more depth, but keep the same progress variable \`t\` driving all of them so they stay in sync.`;
+- still is each clip's first_frame_url (the poster until the clip paints, and the fallback under reduced motion). For scene dives use each scene's generated image.
+- Pacing: give the opening and the finale a higher scroll (1.8 to 2.2) and linger 0.3 to 0.5; keep transit legs brisk (1.2 to 1.4).
+- Copy per scene: eyebrow 2 to 4 words, title 3 to 6 words (the first is the site's hero line, the last is the payoff), body one sentence, 0 to 3 tags.
+- Theme it with CSS variables in an unlayered :root block (they override the engine's defaults): --sw-bg (dark, e.g. #0e0c0a, for photoreal and live action; match the scene background for dioramas), --sw-ink (text), --sw-ink-soft, --sw-accent, --sw-font-display and --sw-font-body (a Google Fonts pairing). The visual identity comes from the clips, so keep the chrome quiet.
+- The engine loads each clip as a blob (always seekable), lazy-loads nearby clips, coalesces seeks, hardens phones and respects reduced motion by itself.`;
 }
