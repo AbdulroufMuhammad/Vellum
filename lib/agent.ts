@@ -241,6 +241,7 @@ function systemPrompt(opts: { templateBrief: string; designSystem: string; codeb
 - Layout with CSS grid/flexbox; it must look right at the canvas width and be responsive. Check contrast. Avoid generic "AI" aesthetics: no purple-blue gradients everywhere, no glassmorphism by default, no centered-everything.
 - SVG animation: a CSS transform or animation on an SVG element replaces its transform attribute, so never animate an element that is positioned with transform="…". Position with an outer <g transform="translate(…)"> and animate an inner <g> (set transform-box: fill-box and a transform-origin on it). Never run two animations that both set transform on the same element; nest groups instead.
 - Printable formats (documents, slides, résumés) include @page and page-break rules so browser print → PDF looks right.
+- Math: write LaTeX with \\( … \\) inline and \\[ … \\] for display equations (never single $ … $, which collides with prices). KaTeX is added to the page automatically, so don't hand-write math as plain text or Unicode.
 
 ## Tweaks
 Expose 2–5 meaningful live controls when they'd help the user explore (accent color, density, speed, which screen to show, a layout variant). Declare them in the file as:

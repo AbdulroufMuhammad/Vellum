@@ -255,6 +255,29 @@ export function joinModuleScripts(html: string): string {
  * yet closed. Parsing one of these drops the open tag (its code turns into page
  * text), so it's stored as written until the part that closes it arrives.
  */
+// \( \), \[ \], $$ and LaTeX environments. Single-dollar inline math is deliberately not a delimiter: prices ($5) would break.
+const LATEX = /\\\(|\\\[|\$\$|\\begin\{(equation|align|gather|aligned|cases|matrix|pmatrix|bmatrix)\*?\}/;
+const MATH_RENDERER = /katex(\.min)?\.js|auto-render|renderMathInElement|mathjax/i;
+
+/**
+ * LaTeX in a design only turns into math once KaTeX's script runs. Long documents are written in parts with their
+ * JavaScript last, so a turn that stops early (or a model that forgets) leaves hundreds of raw \( \) on the page.
+ * Every write gets KaTeX in <head>, deferred, whenever the file has math but no renderer of its own.
+ */
+function ensureMathRenderer(root: HTMLElement, html: string) {
+  const body = root.querySelector("body");
+  if (!body || MATH_RENDERER.test(html) || !LATEX.test(body.innerHTML)) return;
+  const version = /katex@([\d.]+)/.exec(html)?.[1] ?? "0.16.11";
+  const base = `https://cdn.jsdelivr.net/npm/katex@${version}/dist`;
+  const head = root.querySelector("head")!;
+  if (!/katex[^"']*\.css/i.test(html)) head.insertAdjacentHTML("beforeend", `<link rel="stylesheet" href="${base}/katex.min.css">`);
+  const delimiters = `[{left:'$$',right:'$$',display:true},{left:'\\\\[',right:'\\\\]',display:true},{left:'\\\\(',right:'\\\\)',display:false}]`;
+  head.insertAdjacentHTML(
+    "beforeend",
+    `<script defer src="${base}/katex.min.js"></script><script defer src="${base}/contrib/auto-render.min.js" onload="renderMathInElement(document.body,{delimiters:${delimiters},throwOnError:false})"></script>`
+  );
+}
+
 export function unfinishedDocument(html: string) {
   const open = (tag: string) => (html.match(new RegExp(`<${tag}\\b`, "gi")) ?? []).length - (html.match(new RegExp(`</${tag}\\s*>`, "gi")) ?? []).length;
   return open("script") > 0 || open("style") > 0;
@@ -268,6 +291,7 @@ export function finalizeArtifact(html: string, sources: Map<string, Source>): st
   if (!head.querySelector("meta[name=viewport]"))
     head.insertAdjacentHTML("beforeend", `<meta name="viewport" content="width=device-width, initial-scale=1">`);
   citations(root, sources);
+  ensureMathRenderer(root, html);
   cleanCopy(root);
   fixSvgTransforms(root);
   printLayout(root);
