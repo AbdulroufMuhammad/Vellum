@@ -35,7 +35,7 @@ export const MODELS: Record<ModelKey, ModelConfig> = {
   "glm-flash": { id: "z-ai/glm-5.3-flash", label: "GLM 5.3 Flash", note: "Faster, lighter", provider: "nvidia", temperature: 0.6, top_p: 1, max_tokens: 16384 },
   deepseek: { id: "deepseek-chat", label: "DeepSeek V3", note: "DeepSeek API", provider: "deepseek", temperature: 0.6, top_p: 1, max_tokens: 8192 },
   "gpt-oss": { id: "openai/gpt-oss-20b", label: "GPT-OSS 20B", note: "Open-weight, agentic", provider: "nvidia", temperature: 0.7, top_p: 1, max_tokens: 16384 },
-  kimi: { id: "moonshotai/kimi-k3", label: "Kimi K3", note: "Long context", provider: "nvidia", temperature: 0.6, top_p: 1, max_tokens: 16384 },
+  kimi: { id: "moonshotai/kimi-k3", label: "Kimi K3", note: "Long context", provider: "nvidia", temperature: 0.6, top_p: 0.95, max_tokens: 16384 },
   "mistral-nemotron": { id: "mistralai/mistral-nemotron", label: "Mistral Nemotron", note: "Agentic workflows", provider: "nvidia", temperature: 0.6, top_p: 1, max_tokens: 16384 },
   "nemotron-super": { id: "nvidia/nemotron-3-super-120b-a12b", label: "Nemotron 3 Super", note: "Large MoE, high quality", provider: "nvidia", temperature: 0.6, top_p: 0.95, max_tokens: 16384 },
   "nemotron-lightning": { id: "nvidia/nemotron-3.5-lightning-30b-a3b", label: "Nemotron 3.5 Lightning", note: "Fast MoE", provider: "nvidia", temperature: 0.6, top_p: 0.95, max_tokens: 16384 },
@@ -152,6 +152,19 @@ class IdleTimeout extends Error {
   name = "TimeoutError";
 }
 
+/**
+ * Sampling settings a model insists on, learned from its own errors: some hosted models reject any other value
+ * ("`top_p` is immutable for this model and must be 0.95, got 1"). Kept for the life of the server instance.
+ */
+const pinned = new Map<ModelKey, Record<string, number | boolean>>();
+
+/** The setting and value a 400 says the model requires, if that's what it says. */
+function requiredSetting(body: string): [string, number | boolean] | null {
+  const m = /`?([a-z_]+)`?\s+is immutable for this model and must be\s+(-?[\d.]+|true|false)/i.exec(body);
+  if (!m) return null;
+  return [m[1], m[2] === "true" ? true : m[2] === "false" ? false : Number(m[2])];
+}
+
 async function chatOnce(modelKey: ModelKey, opts: ChatOpts, onFirstByte: () => void): Promise<ChatResult> {
   const m = MODELS[modelKey];
   const { url, key } = baseFor(m.provider);
@@ -167,22 +180,34 @@ async function chatOnce(modelKey: ModelKey, opts: ChatOpts, onFirstByte: () => v
   armIdle();
 
   try {
-    const res = await fetch(`${url}/chat/completions`, {
-      method: "POST",
-      signal: ctrl.signal,
-      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", Accept: "text/event-stream" },
-      body: JSON.stringify({
-        model: m.id,
-        messages: opts.messages,
-        stream: true,
-        temperature: m.temperature,
-        top_p: m.top_p,
-        max_tokens: opts.maxTokens ?? m.max_tokens,
-        ...(opts.tools?.length ? { tools: opts.tools, tool_choice: "auto" } : {}),
-        ...m.extra,
-        ...opts.extra,
-      }),
-    });
+    const send = () =>
+      fetch(`${url}/chat/completions`, {
+        method: "POST",
+        signal: ctrl.signal,
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", Accept: "text/event-stream" },
+        body: JSON.stringify({
+          model: m.id,
+          messages: opts.messages,
+          stream: true,
+          temperature: m.temperature,
+          top_p: m.top_p,
+          max_tokens: opts.maxTokens ?? m.max_tokens,
+          ...(opts.tools?.length ? { tools: opts.tools, tool_choice: "auto" } : {}),
+          ...m.extra,
+          ...opts.extra,
+          ...pinned.get(modelKey),
+        }),
+      });
+    let res = await send();
+    // A model that only accepts one value for a sampling setting says which: use it, and remember it (up to 3 settings).
+    for (let i = 0; i < 3 && res.status === 400; i++) {
+      const text = await res.text();
+      const need = requiredSetting(text);
+      if (!need) throw new GatewayError(res.status, text);
+      pinned.set(modelKey, { ...pinned.get(modelKey), [need[0]]: need[1] });
+      console.log(`[gateway] ${m.id} requires ${need[0]}=${need[1]}; retrying with it`);
+      res = await send();
+    }
     if (!res.ok || !res.body) throw new GatewayError(res.status, await res.text());
 
     const out: ChatResult = { content: "", reasoning: "", toolCalls: [], finish: null, usage: null };
