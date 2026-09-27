@@ -148,9 +148,17 @@ function automatedFindings(c: CheckResult): string[] {
     );
   if (p?.spill) out.push(`Printed, ${p.spill.count} fixed-height sheet${p.spill.count > 1 ? "s run" : " runs"} out past the bottom edge, onto the next sheet: ${eg(p.spill)}. Use min-height instead of a fixed height, and fit the content.`);
   if (p?.blank) out.push(`Printed, ${p.blank.count} sheet${p.blank.count > 1 ? "s run" : " runs"} just past a page break and leave a mostly empty page: ${eg(p.blank)}. Tighten each one to end on the page before, or move content so the page is used.`);
+  if (p?.loose)
+    out.push(`Printed, ${p.loose.count} part${p.loose.count > 1 ? "s sit" : " sits"} between the page sheets instead of inside one, so ${p.loose.count > 1 ? "they print" : "it prints"} without the page design (no margins, background or running header): ${eg(p.loose)}. Wrap each in its own page sheet, like the pages around it.`);
+  if (p?.flush)
+    out.push(`Printed, ${p.flush.count} sheet${p.flush.count > 1 ? "s run" : " runs"} onto more than one page, and with @page margin 0 the continued part prints flush against the paper edge with no margin. Put the page margins in the @page rule (and drop the sheet's own padding in print), or end each sheet before the page does.`);
   if (p?.target && (p.pages < p.target[0] || p.pages > p.target[1])) {
     const want = p.target[0] === p.target[1] ? `exactly ${p.target[0]} page${p.target[0] > 1 ? "s" : ""}` : `${p.target[0]} to ${p.target[1]} pages`;
-    out.push(
+    if (p.selfDeclared && p.pages > p.target[1] * 1.25)
+      out.push(
+        `Printed, it runs to ${p.pages} pages, but its <meta name="pages"> declares ${want}. That count is the design's own, not the user's: if the content really needs more pages, update the declared count to match; tighten or trim only where it reads better. Never hide or squeeze content to hit it.`
+      );
+    else out.push(
       p.pages > p.target[1]
         ? `Printed, it runs to ${p.pages} pages but must be ${want}. Make it fit while keeping the designed layout: tighten spacing, line height and type sizes a little, trim wording, and check the @page margins and print styles.`
         : `Printed, it's only ${p.pages} page${p.pages > 1 ? "s" : ""} but should be ${want}. Add real depth (more evidence, analysis, examples) rather than padding.`
@@ -307,6 +315,8 @@ type ProjectSettings = {
   partial?: { path: string; content: string };
   /** A file written right before a pause that still needs its browser check. */
   pendingCheck?: string;
+  /** Rounds this request has been handed to a fresh invocation just to check its latest version (capped, so it always ends). */
+  checkRounds?: number;
   /** Reasoning cut off by the time limit before the model acted on it, handed to the next round so it doesn't start over. */
   partialThought?: string;
   /**
@@ -707,7 +717,8 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     };
 
     const finish = async (reply: string | null) => {
-      if (settings.phase || settings.plan || settings.buildReply || settings.buildModel || settings.workingVersions) {
+      if (settings.phase || settings.plan || settings.buildReply || settings.buildModel || settings.workingVersions || settings.checkRounds) {
+        delete settings.checkRounds;
         delete settings.phase;
         delete settings.plan;
         delete settings.buildReply;
@@ -941,10 +952,15 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
           const tooLate = deadline - Date.now() < CHECK_MIN_MS;
           // What the user is told about the final version when the check couldn't clear it.
           let checkNote = "";
-          // Postpone a check to the next round at most once, so a short round can never pause forever.
-          if (unchecked && !(tooLate && checkDeferred)) {
+          // Postpone a check to the next round: once if it was never run, and a few more times while each round's check
+          // led to fixes (a long document can take a whole round to check and fix), so a short round can never pause forever.
+          const canDefer = !checkDeferred || (autoChecks > 0 && (settings.checkRounds ?? 0) < 3);
+          if (unchecked && !(tooLate && !canDefer)) {
             if (tooLate) {
+              settings.checkRounds = (settings.checkRounds ?? 0) + 1;
               settings.pendingCheck = unchecked;
+              // In the check step, the next round opens with the check itself rather than a model call.
+              if (phase === "check") settings.phaseFresh = true;
               await db.from("projects").update({ settings }).eq("id", projectId);
               status = "paused";
               await emit({ type: "continue", payload: {} });

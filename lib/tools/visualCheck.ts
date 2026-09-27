@@ -27,6 +27,12 @@ export type Automated = {
     spill?: { count: number; examples: string[] };
     /** Sheets that run just past a page boundary, leaving a mostly empty page. */
     blank?: { count: number; examples: string[] };
+    /** Content between the page sheets, outside any of them, so it prints without the page design. */
+    loose?: { count: number; examples: string[] };
+    /** With no @page margin, sheets that run onto more pages print their continued part flush against the paper edge. */
+    flush?: { count: number };
+    /** The page target is only the design's own <meta name="pages">, not one the user set. */
+    selfDeclared?: boolean;
   };
   /** For 3D scenes that expose window.__vellum3d: parts attached to nothing, and how the model sits in the frame. */
   threeD?: { parts: number; floating: string[]; cutOff: boolean; tiny: boolean; fill?: number; hook: boolean };
@@ -374,8 +380,8 @@ const INSPECT_PRINT = String.raw`((pageH) => {
   };
   const name = (el) => words(el.querySelector("h1,h2,h3") || el).slice(0, 70);
   const top = (el) => el.getBoundingClientRect().top + scrollY;
-  const cut = [], spill = [], blank = [], shots = [];
-  let hidden = 0, sheets = 0;
+  const cut = [], spill = [], blank = [], shots = [], sheetEls = [];
+  let hidden = 0, sheets = 0, multi = 0;
   const reported = [];
   for (const el of Array.from(document.body.querySelectorAll("*"))) {
     const cs = getComputedStyle(el);
@@ -383,7 +389,11 @@ const INSPECT_PRINT = String.raw`((pageH) => {
     const h = el.clientHeight;
     if (h < pageH * 0.6) continue;
     const pageBreak = /page|always|left|right/.test(cs.breakAfter + cs.breakBefore + cs.pageBreakAfter + cs.pageBreakBefore);
-    if (pageBreak) sheets++;
+    if (pageBreak && !sheetEls.some((o) => o.contains(el))) {
+      sheets++;
+      sheetEls.push(el);
+      if (h > pageH * 1.02) multi++;
+    }
     if (reported.some((r) => r.contains(el))) continue;
     const over = el.scrollHeight - h;
     const clips = /(hidden|clip|auto|scroll)/.test(cs.overflowY);
@@ -413,7 +423,27 @@ const INSPECT_PRINT = String.raw`((pageH) => {
       }
     }
   }
-  return { cut: cut.slice(0, 5), cutCount: cut.length, spill: spill.slice(0, 5), spillCount: spill.length, blank: blank.slice(0, 5), blankCount: blank.length, hiddenPages: Math.round((hidden / pageH) * 10) / 10, sheets, shots };
+  // Content sitting between the sheets (a section whose page wrapper went missing) prints without the page design.
+  const loose = [];
+  if (sheetEls.length >= 2) {
+    const parents = new Set(sheetEls.map((el) => el.parentElement).filter(Boolean));
+    for (const parent of parents) {
+      let run = null;
+      for (const child of Array.from(parent.children)) {
+        const isSheet = sheetEls.includes(child) || sheetEls.some((el) => child.contains(el));
+        const shows = !/^(SCRIPT|STYLE|TEMPLATE|LINK|META|NOSCRIPT)$/.test(child.tagName) && getComputedStyle(child).display !== "none" && words(child).length > 1;
+        if (isSheet) { run = null; continue; }
+        if (!shows) continue;
+        if (!run) { run = { el: child, text: "", heading: "" }; loose.push(run); }
+        const heading = child.matches("h1,h2,h3") ? child : child.querySelector("h1,h2,h3");
+        if (!run.heading && heading) run.heading = words(heading);
+        if (run.text.length < 30) run.text = (run.text + " " + words(child)).trim();
+      }
+    }
+  }
+  const looseNamed = loose.filter((r) => r.text.length > 20).map((r) => ({ el: r.el, text: r.heading || r.text }));
+  for (const r of looseNamed) if (shots.length < 3) shots.push({ y: Math.max(0, Math.round(top(r.el) - 40)), why: "loose" });
+  return { cut: cut.slice(0, 5), cutCount: cut.length, spill: spill.slice(0, 5), spillCount: spill.length, blank: blank.slice(0, 5), blankCount: blank.length, hiddenPages: Math.round((hidden / pageH) * 10) / 10, sheets, multi, loose: looseNamed.slice(0, 5).map((r) => '"' + r.text.slice(0, 70) + '"'), looseCount: looseNamed.length, shots };
 })`;
 
 type PrintReport = {
@@ -425,6 +455,9 @@ type PrintReport = {
   blankCount: number;
   hiddenPages: number;
   sheets: number;
+  multi: number;
+  loose: string[];
+  looseCount: number;
   shots: { y: number; why: string }[];
 };
 
@@ -473,7 +506,7 @@ function inches(v: string): number | null {
 }
 
 /** Printable width and height of a page in CSS px, from the design's first @page rule (Letter with ~0.4in margins by default). */
-function printArea(html: string): { width: number; height: number } {
+function printArea(html: string): { width: number; height: number; bare: boolean } {
   const rule = /@page\s*(?::\w+\s*)?\{([^}]*)\}/i.exec(html)?.[1] ?? "";
   let [w, h] = PAGE_SIZES.letter;
   const size = /(?:^|;)\s*size\s*:\s*([^;]+)/i.exec(rule)?.[1]?.trim().toLowerCase();
@@ -487,7 +520,7 @@ function printArea(html: string): { width: number; height: number } {
   const margin = /(?:^|;)\s*margin\s*:\s*([^;]+)/i.exec(rule)?.[1];
   const m = (margin ? margin.trim().split(/\s+/).map(inches) : []).map((x) => x ?? 0.4);
   const [top, right, bottom, left] = m.length === 1 ? [m[0], m[0], m[0], m[0]] : m.length === 2 ? [m[0], m[1], m[0], m[1]] : m.length === 3 ? [m[0], m[1], m[2], m[1]] : m.length === 4 ? m : [0.4, 0.4, 0.4, 0.4];
-  return { width: Math.round((w - left - right) * 96), height: Math.round((h - top - bottom) * 96) };
+  return { width: Math.round((w - left - right) * 96), height: Math.round((h - top - bottom) * 96), bare: Math.max(top, bottom) < 0.1 };
 }
 
 /** The page count a design declares with <meta name="pages" content="1"> or "3-5". */
@@ -631,7 +664,7 @@ async function render(html: string, printTarget: [number, number] | null): Promi
     if (printable) {
       await page.setViewportSize({ width: WIDTH, height: 800 });
       const pdf = await page.pdf({ preferCSSPageSize: true, printBackground: true, format: "Letter" });
-      print = { pages: countPdfPages(pdf), target: declaredPages(html) ?? printTarget };
+      print = { pages: countPdfPages(pdf), target: printTarget ?? declaredPages(html), selfDeclared: !printTarget && !!declaredPages(html) };
       lap("pdf");
       const area = printArea(html);
       await page.emulateMedia({ media: "print" });
@@ -643,6 +676,8 @@ async function render(html: string, printTarget: [number, number] | null): Promi
       if (sheets?.cutCount) print.cut = { count: sheets.cutCount, examples: sheets.cut, hiddenPages: sheets.hiddenPages };
       if (sheets?.spillCount) print.spill = { count: sheets.spillCount, examples: sheets.spill };
       if (sheets?.blankCount) print.blank = { count: sheets.blankCount, examples: sheets.blank };
+      if (sheets?.looseCount) print.loose = { count: sheets.looseCount, examples: sheets.loose };
+      if (area.bare && sheets?.multi && !sheets.cutCount) print.flush = { count: sheets.multi };
       const spots = [0, ...(sheets?.shots ?? []).map((s) => Math.min(Math.max(0, s.y), Math.max(0, full - area.height)))];
       if (spots.length === 1 && full > area.height * 1.5) spots.push(area.height);
       for (const y of spots.filter((y, i) => spots.findIndex((o) => Math.abs(o - y) < area.height / 2) === i).slice(0, 3)) {
