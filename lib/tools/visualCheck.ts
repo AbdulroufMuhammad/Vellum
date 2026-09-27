@@ -428,6 +428,15 @@ function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> 
   return Promise.race([p, new Promise<T>((_, reject) => (timer = setTimeout(() => reject(new Error(message)), ms)))]).finally(() => clearTimeout(timer));
 }
 
+/** A renderer crash, explained for the kind of page it is: a 3D scene's likely cause differs from a video page's. */
+function crashMessage(html: string, when: string) {
+  if (/three\.js|babylon/i.test(html))
+    return `the page's renderer crashed ${when}, most likely because the scene is too heavy for the browser to hold at once (a very high triangle count, or many chained CSG boolean cuts computed one at a time instead of batched). Simplify the scene or batch repeated cuts into one operation, then try again.`;
+  if (/<video\b|mountScrollWorld|\.(mp4|webm|mov)\b/i.test(html))
+    return `the checking browser ran out of memory ${when} while decoding the page's video clips. That's a limit of the server-side checker, not a problem with the page: if the last check before this one passed, reply and finish instead of changing anything.`;
+  return `the page's renderer crashed ${when}, most likely because the page is too heavy for the browser to hold at once (very large images, huge inline data or an endless loop). Lighten it, then try again.`;
+}
+
 async function render(html: string, printTarget: [number, number] | null): Promise<{ automated: Automated; tiles: Buffer[]; printTiles: Buffer[]; views: Buffer[] }> {
   // Step timings go to the server log, so a slow check can be traced to the step that's slow.
   const t0 = Date.now();
@@ -446,7 +455,7 @@ async function render(html: string, printTarget: [number, number] | null): Promi
     const page = await openDesign(browser, html, { width: WIDTH, height: 800 }, (msg) => jsErrors.push(msg));
     if (page.isClosed())
       throw new Error(
-        "the page's renderer crashed while it loaded, most likely because the scene is too heavy for the browser to hold at once (a very high triangle count, or many chained CSG boolean cuts computed one at a time instead of batched). Simplify the scene or batch repeated cuts into one operation, then try again."
+        crashMessage(html, "while it loaded")
       );
     lap("open");
     // Canvas and WebGL scenes: give them a moment to draw, then stop their animation loops. Software WebGL on the
@@ -571,7 +580,7 @@ export async function checkDesign(
     // that raw Playwright message means nothing to the model, so it gets a diagnosis it can act on.
     if (e instanceof Error && /has been closed/i.test(e.message))
       throw new Error(
-        "the page's renderer crashed partway through, most likely because the scene is too heavy for the browser to hold at once (a very high triangle count, or many chained CSG boolean cuts computed one at a time instead of batched). Simplify the scene or batch repeated cuts into one operation, then try again."
+        crashMessage(html, "partway through")
       );
     throw e;
   });
