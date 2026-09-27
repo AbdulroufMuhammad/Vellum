@@ -536,7 +536,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             research: template.id === "research",
             researchSources: sources.turnLimit,
             threeD: is3DRequest(template.id, String(newest?.content ?? project.goal ?? "")),
-            cinematic: isCinematicRequest(String(newest?.content ?? project.goal ?? "")),
+            cinematic: isCinematicRequest(template.id, String(newest?.content ?? project.goal ?? "")),
           }) + (summary ? `\n\n## Earlier in this conversation (summarized)\n${summary}` : ""),
       },
     ];

@@ -10,8 +10,8 @@
 const TRIGGER = /\b(cinematic|scroll[- ]?driven|scroll[- ]?scrub|scrollytelling|parallax|fly[- ]?through|dive[- ]?in|product film|scroll story)\b/i;
 
 /** Whether the request calls for a scroll-driven cinematic treatment, worth adding this guide for. */
-export function isCinematicRequest(text: string): boolean {
-  return TRIGGER.test(text);
+export function isCinematicRequest(templateId: string, text: string): boolean {
+  return templateId === "cinematic" || TRIGGER.test(text);
 }
 
 /** The agent's playbook for scroll-driven cinematic pages built from generated stills. */
@@ -30,5 +30,38 @@ Drive motion from scroll position, not from time or hover:
 
 Copy sits in its own layer above the images (a heading, a short line, sometimes nothing) with its own scroll-linked fade/rise, timed to appear after the scene's images have mostly resolved (progress > 0.15) and leave before the crossfade starts.
 
-Keep it to a real story with a beginning, middle and turn, matching the request's product or narrative; never generate filler scenes just to hit a count.`;
+Keep it to a real story with a beginning, middle and turn, matching the request's product or narrative; never generate filler scenes just to hit a count.
+
+Markup and scroll-scrub engine, adapt directly rather than freehanding the math (one rAF-throttled scroll listener drives every scene, so it stays smooth with any number of scenes):
+\`\`\`html
+<div class="reel" style="height: calc(var(--scenes) * 100vh)">
+  <section class="scene" data-scene="0"><img class="bg" src="…"><img class="fg" src="…"><div class="copy"><h2>…</h2></div></section>
+  <!-- one .scene per generated still, in order -->
+</div>
+<script>
+  const scenes = [...document.querySelectorAll(".scene")];
+  document.documentElement.style.setProperty("--scenes", scenes.length);
+  function onScroll() {
+    const mid = window.scrollY + window.innerHeight / 2;
+    for (const el of scenes) {
+      const top = el.offsetTop, h = el.offsetHeight;
+      const t = Math.min(1, Math.max(0, (mid - top) / h));
+      const bg = el.querySelector(".bg"), fg = el.querySelector(".fg"), copy = el.querySelector(".copy");
+      if (bg) bg.style.transform = \`scale(\${1 + t * 0.12}) translateY(\${t * -30}px)\`;
+      if (fg) fg.style.transform = \`translateY(\${t * -80}px)\`;
+      const fadeOut = Math.max(0, (t - 0.75) / 0.25);
+      el.style.opacity = String(1 - fadeOut);
+      if (copy) copy.style.opacity = String(Math.min(1, t / 0.15) * (1 - Math.min(1, t / 0.6)));
+    }
+  }
+  let ticking = false;
+  window.addEventListener("scroll", () => {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(() => { onScroll(); ticking = false; });
+  }, { passive: true });
+  onScroll();
+</script>
+\`\`\`
+\`.scene\` is \`position: sticky; top: 0; height: 100vh; overflow: hidden\` with \`.bg\`/\`.fg\` absolutely filling it (\`will-change: transform\`) and \`.copy\` centered above them; \`.reel\` is the tall scroll container. Adjust the constants (0.12 zoom, -30px/-80px drift, the 0.75-1 fade window) to the story's pacing, and add more layers per scene if a moment needs more depth, but keep the same progress variable \`t\` driving all of them so they stay in sync.`;
 }

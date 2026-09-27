@@ -182,6 +182,23 @@ export const TEMPLATES: Template[] = [
       "A marketing landing page at a 1440px design width that stays responsive: a hero with a sharp value proposition and primary CTA, social proof, features or how it works, pricing or a comparison where it fits, FAQ and footer. Real, specific copy.",
   },
   {
+    id: "cinematic",
+    label: "Cinematic scroll",
+    prefill: {
+      lead: "Design a cinematic scroll story for ",
+      subject: "the launch of a new electric motorcycle",
+      steps: [
+        "Break it into 5 to 8 scenes with a real beginning, middle and turn, not just a list of sections.",
+        "Write one shared visual style phrase (lighting, color grade, medium) and generate a real AI still for every scene, plus a foreground layer for any scene that needs depth.",
+        "Build the scroll-scrub structure: sticky full-screen scenes with scroll-linked zoom, drift and parallax, crossfading into the next scene.",
+        "Time each scene's copy to appear once its images have resolved and leave before the crossfade.",
+        "Scroll through it slowly and fix anything that jumps, stutters or resolves too early or late.",
+      ],
+    },
+    brief:
+      "A scroll-driven cinematic page built from real AI-generated stills (generate_image), never static hero images or gradients standing in for them: 5-8 scenes as position: sticky full-screen sections with scroll-linked Ken Burns zoom, parallax depth and crossfade between scenes, following the Cinematic scroll guide's markup and scroll-scrub engine. One shared style phrase keeps every generated still part of the same world. A real story with a beginning, middle and turn; timed copy per scene.",
+  },
+  {
     id: "designsystem",
     label: "Design system",
     prefill: {

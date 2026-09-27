@@ -110,6 +110,20 @@ export default function TemplateIcon({ id }: { id: string }) {
             <rect x="36" y="20" width="15" height="17" rx="2" fill="#a9d8cf" />
           </>
         );
+      case "cinematic":
+        return (
+          <>
+            <rect x="8" y="6" width="48" height="42" rx="3" {...S} />
+            <path d="M8 15h48M8 39h48" stroke="#1a1918" strokeWidth={5} />
+            <rect x="12" y="17" width="7" height="4" rx="1" fill="#1a1918" />
+            <rect x="22" y="17" width="7" height="4" rx="1" fill="#1a1918" />
+            <rect x="32" y="17" width="7" height="4" rx="1" fill="#1a1918" />
+            <rect x="42" y="17" width="7" height="4" rx="1" fill="#1a1918" />
+            <circle cx="26" cy="27" r="10" fill="#d6a17a" />
+            <circle cx="38" cy="30" r="6" fill="#5e5c56" />
+            <path d="M8 46q10-7 20-3t28-4" fill="none" stroke={ACC} strokeWidth={2} strokeLinecap="round" />
+          </>
+        );
       case "designsystem":
         return (
           <>
