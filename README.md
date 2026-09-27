@@ -74,7 +74,7 @@ read-only file, render and export endpoints they use).
   [scroll-world](https://github.com/AbdulroufMuhammad/scroll-world) technique:
   scroll drives `video.currentTime` through one continuous AI-generated camera
   flight. `generate_video` renders each clip with NVIDIA Cosmos3 Nano
-  (image-to-video, 720p/24fps, same `NVIDIA_API_KEY`) and returns it with its
+  (image-to-video, 720p/24fps; `NVIDIA_API_KEY`, or a separate `COSMOS_API_KEY` since preview models are enabled per account) and returns it with its
   actual first and last frames (decoded in the server's headless Chromium, no
   ffmpeg needed), so each leg starts on the previous leg's real last frame and
   every seam is frame-identical. The page mounts scroll-world's own MIT scrub

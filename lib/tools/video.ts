@@ -21,8 +21,9 @@ export type VideoResult = { url: string; first_frame_url: string; last_frame_url
 
 /** POST to Cosmos; long jobs come back 202 with an NVCF-REQID to poll until the result is ready. */
 async function callCosmos(body: Record<string, unknown>, deadline: number, signal?: AbortSignal): Promise<Buffer> {
-  const key = process.env.NVIDIA_API_KEY;
-  if (!key) throw new Error("video generation needs NVIDIA_API_KEY, which isn't set on this deployment");
+  // A key issued from the cosmos3-nano page can differ from the chat models' key: preview functions are enabled per account.
+  const key = process.env.COSMOS_API_KEY || process.env.NVIDIA_API_KEY;
+  if (!key) throw new Error("video generation needs NVIDIA_API_KEY (or COSMOS_API_KEY), which isn't set on this deployment");
   const left = () => Math.max(1000, deadline - Date.now());
   // NVCF holds the request open up to this long before answering 202 with an id to poll.
   const headers = { Authorization: `Bearer ${key}`, Accept: "application/json", "Content-Type": "application/json", "NVCF-POLL-SECONDS": String(Math.min(240, Math.floor(left() / 1000) - 5)) };
@@ -36,6 +37,10 @@ async function callCosmos(body: Record<string, unknown>, deadline: number, signa
     res = await fetch(`${NVCF_STATUS}/${reqId}`, { headers: { Authorization: headers.Authorization, Accept: "application/json" }, signal: until() });
   }
   const text = await res.text();
+  if (res.status === 404 && /not found for account/i.test(text))
+    throw new Error(
+      "Video generation isn't enabled for this deployment's NVIDIA account (cosmos3-nano is a preview model, enabled per account). This is not transient and retrying won't help: don't retry and don't fall back to still images. Stop and tell the user to issue an API key from the cosmos3-nano page on build.nvidia.com and set it as COSMOS_API_KEY in the deployment's environment variables."
+    );
   if (res.status === 422) throw new Error(`cosmos3-nano refused this request (${text.slice(0, 240)}). Reword the prompt (drop anything that could read as unsafe) and try again.`);
   if (!res.ok) throw new Error(`cosmos3-nano ${res.status}: ${text.slice(0, 300)}`);
   let json: { b64_video?: string | null };
