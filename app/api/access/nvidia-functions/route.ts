@@ -18,24 +18,31 @@ export async function GET(req: Request) {
       out[name] = "not set";
       continue;
     }
-    const res = await fetch("https://api.nvcf.nvidia.com/v2/nvcf/functions?visibility=authorized", {
-      headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
-      signal: AbortSignal.timeout(20_000),
-    }).catch((e: Error) => e);
-    if (res instanceof Error) {
-      out[name] = { error: res.message };
-      continue;
+    const byVisibility: Record<string, unknown> = {};
+    for (const visibility of ["authorized", "public"]) {
+      const res = await fetch(`https://api.nvcf.nvidia.com/v2/nvcf/functions?visibility=${visibility}`, {
+        headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+        signal: AbortSignal.timeout(25_000),
+      }).catch((e: Error) => e);
+      if (res instanceof Error) {
+        byVisibility[visibility] = { error: res.message };
+        continue;
+      }
+      const text = await res.text();
+      if (!res.ok) {
+        byVisibility[visibility] = { status: res.status, body: text.slice(0, 300) };
+        continue;
+      }
+      const fns: { id: string; name: string; status?: string; versionId?: string }[] = JSON.parse(text).functions ?? [];
+      byVisibility[visibility] = {
+        count: fns.length,
+        matches: fns
+          .filter((f) => f.name?.toLowerCase().includes(q))
+          .slice(0, 40)
+          .map((f) => ({ id: f.id, name: f.name, status: f.status, versionId: f.versionId })),
+      };
     }
-    const text = await res.text();
-    if (!res.ok) {
-      out[name] = { status: res.status, body: text.slice(0, 300) };
-      continue;
-    }
-    const fns: { id: string; name: string; status?: string; versionId?: string }[] = JSON.parse(text).functions ?? [];
-    out[name] = {
-      authorizedCount: fns.length,
-      matches: fns.filter((f) => f.name?.toLowerCase().includes(q)).map((f) => ({ id: f.id, name: f.name, status: f.status, versionId: f.versionId })),
-    };
+    out[name] = byVisibility;
   }
   return Response.json(out);
 }
