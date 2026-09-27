@@ -3,7 +3,7 @@ import type { Browser, Page } from "playwright-core";
 // Designs may only load from these hosts, so the headless browser blocks everything else.
 const ALLOWED_HOSTS = /^(fonts\.googleapis\.com|fonts\.gstatic\.com|cdn\.jsdelivr\.net|unpkg\.com|cdnjs\.cloudflare\.com)$/;
 
-function allowedUploadHost() {
+function allowedStorageHost() {
   try {
     return new URL(process.env.NEXT_PUBLIC_SUPABASE_URL ?? "").hostname;
   } catch {
@@ -55,7 +55,7 @@ export async function openDesign(browser: Browser, html: string, viewport: { wid
     // Failed resource loads are reported from the route handler below (only the ones the design is to blame for).
     page.on("console", (m) => m.type() === "error" && !/Failed to load resource/.test(m.text()) && onError(m.text().slice(0, 200)));
   }
-  const uploads = allowedUploadHost();
+  const storageHost = allowedStorageHost();
   const report = (type: string, url: string, why: string) => {
     if (onError && (type === "script" || type === "stylesheet")) onError(`Couldn't load ${type} ${url.slice(0, 160)} (${why})`);
   };
@@ -63,7 +63,10 @@ export async function openDesign(browser: Browser, html: string, viewport: { wid
     const req = route.request();
     const url = new URL(req.url());
     if (url.protocol === "data:" || url.protocol === "blob:") return route.continue();
-    const allowed = ALLOWED_HOSTS.test(url.hostname) || (uploads && url.hostname === uploads && url.pathname.includes("/artifacts/uploads/"));
+    // The whole "artifacts" bucket is this app's own trusted storage (uploads, and generate_image /
+    // generate_3d_model outputs under <projectId>/generated/), not third-party content, so it's allowed
+    // wherever it sits in the bucket, not just the uploads/ prefix.
+    const allowed = ALLOWED_HOSTS.test(url.hostname) || (storageHost && url.hostname === storageHost && url.pathname.includes("/artifacts/"));
     if (!allowed) {
       report(req.resourceType(), req.url(), "host not allowed; use Google Fonts, jsDelivr, unpkg or cdnjs");
       return route.abort();
