@@ -121,8 +121,8 @@ read-only file, render and export endpoints they use).
   it from the front, side and three-quarter view for the reviewer. A renderer
   crash mid-check (an overloaded scene) is reported to the agent as a plain
   diagnosis instead of a raw browser error, so it knows to simplify or batch.
-- **Math and graphs** (`lib/finalize.ts`) — any file with LaTeX (`\\( \\)`,
-  `\\[ \\]`, `$$`) but no renderer gets KaTeX + auto-render injected into
+- **Math and graphs** (`lib/finalize.ts`) — any file with LaTeX (`\( \)`,
+  `\[ \]`, `$$`) but no renderer gets KaTeX + auto-render injected into
   `<head>` on every write, and any `<div data-plot='{…}'>` gets function-plot
   plus a mount script, so math and graphs render even when a long document's
   final part (where scripts would go) is never written. Graphs are computed
