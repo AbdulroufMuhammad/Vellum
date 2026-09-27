@@ -73,16 +73,19 @@ read-only file, render and export endpoints they use).
 - **Cinematic scroll** (`lib/cinematic.ts`, `lib/tools/video.ts`) — the
   [scroll-world](https://github.com/AbdulroufMuhammad/scroll-world) technique:
   scroll drives `video.currentTime` through one continuous AI-generated camera
-  flight. `generate_video` renders each clip with NVIDIA Cosmos3 Nano
-  (image-to-video, 720p/24fps; `NVIDIA_API_KEY`, or a separate `COSMOS_API_KEY` since preview models are enabled per account) and returns it with its
-  actual first and last frames (decoded in the server's headless Chromium, no
-  ffmpeg needed), so each leg starts on the previous leg's real last frame and
-  every seam is frame-identical. The page mounts scroll-world's own MIT scrub
-  engine (pinned on jsDelivr: blob-loaded clips, seek coalescing, lazy loading,
-  phone hardening, reduced motion) with a config. A clip takes minutes, so the
-  agent renders one per step; with too little time left a step yields and the
-  next continues, and everything generated so far in the request
-  (`settings.media`) is handed back on resume so the chain never loses its links.
+  flight. **Built, but not available yet:** NVIDIA's hosted API offers no
+  image-to-video model to this deployment's key, so `generate_video` stops
+  with a clear message until `COSMOS_URL` points at a self-hosted Cosmos NIM
+  (or a paid provider is wired in). See
+  [docs/video-generation.md](docs/video-generation.md) for what was checked,
+  how to turn it on, and how to verify it. `generate_video` returns each clip
+  with its actual first and last frames (decoded in the server's headless
+  Chromium, no ffmpeg needed), so each leg starts on the previous leg's real
+  last frame and every seam is frame-identical. The page mounts scroll-world's
+  own MIT scrub engine (pinned on jsDelivr) with a config. A clip takes
+  minutes, so the agent renders one per step; a step short on time yields to
+  the next, and everything generated so far in the request (`settings.media`)
+  is handed back on resume so the chain never loses its links.
 - **Real generated images and meshes** (`lib/tools/genai.ts`) — NVIDIA's
   hosted GenAI endpoints: `generate_image` (FLUX.1-dev) for a genuine photo or
   illustration, used as a design's hero image, photo or texture; `generate_3d_model`

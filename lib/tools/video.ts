@@ -1,6 +1,7 @@
 /**
- * Real AI video for scroll-scrubbed cinematic pages: NVIDIA Cosmos3 Nano image-to-video
- * (ai.api.nvidia.com/v1/cosmos/nvidia/cosmos3-nano, same NVIDIA_API_KEY). Every clip comes back
+ * Real AI video for scroll-scrubbed cinematic pages: NVIDIA Cosmos3 Nano image-to-video. Not available on the hosted
+ * API for this deployment's key (see docs/video-generation.md); point COSMOS_URL at a self-hosted Cosmos NIM's
+ * /v1/infer to enable it, no code change needed. Every clip comes back
  * with its first and last frames extracted and stored, because the scroll-world technique chains
  * clips: each leg starts on the previous leg's ACTUAL last frame, so every seam is frame-identical.
  * Frames are pulled with the headless Chromium the visual check already ships (there's no ffmpeg on
@@ -10,10 +11,12 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { BUCKET } from "./files";
 import { launchBrowser } from "./browser";
 
-// cosmos3-nano is a preview model: its documented ai.api.nvidia.com route 404s, so it's invoked through NVIDIA Cloud
-// Functions by the function id its build.nvidia.com page carries (nvcfFunctionId), with the same key.
+// COSMOS_URL: a self-hosted Cosmos NIM (e.g. http://gpu-box:8000/v1/infer), which takes the same request and returns the
+// same { b64_video }. Unset, it falls back to NVIDIA Cloud Functions by the id cosmos3-nano's catalog page carries, which
+// is a private function no public API key can currently call (the documented ai.api.nvidia.com route 404s).
 const COSMOS_FUNCTION_ID = process.env.COSMOS_FUNCTION_ID ?? "d09cd49d-d7f2-4361-928f-ea22af707249";
-const COSMOS_URL = `https://api.nvcf.nvidia.com/v2/nvcf/pexec/functions/${COSMOS_FUNCTION_ID}`;
+const SELF_HOSTED = !!process.env.COSMOS_URL;
+const COSMOS_URL = process.env.COSMOS_URL || `https://api.nvcf.nvidia.com/v2/nvcf/pexec/functions/${COSMOS_FUNCTION_ID}`;
 const NVCF_STATUS = "https://api.nvcf.nvidia.com/v2/nvcf/pexec/status";
 const FPS = 24;
 
@@ -21,12 +24,14 @@ export type VideoResult = { url: string; first_frame_url: string; last_frame_url
 
 /** POST to Cosmos; long jobs come back 202 with an NVCF-REQID to poll until the result is ready. */
 async function callCosmos(body: Record<string, unknown>, deadline: number, signal?: AbortSignal): Promise<Buffer> {
-  // A key issued from the cosmos3-nano page can differ from the chat models' key: preview functions are enabled per account.
-  const key = process.env.COSMOS_API_KEY || process.env.NVIDIA_API_KEY;
-  if (!key) throw new Error("video generation needs NVIDIA_API_KEY (or COSMOS_API_KEY), which isn't set on this deployment");
+  // A self-hosted NIM may need no key; COSMOS_API_KEY is for one that does (or for a separate NVIDIA account).
+  const key = process.env.COSMOS_API_KEY || (SELF_HOSTED ? "" : process.env.NVIDIA_API_KEY);
+  if (!key && !SELF_HOSTED) throw new Error("video generation needs COSMOS_URL (a self-hosted Cosmos NIM) or an NVIDIA key that can call cosmos3-nano; see docs/video-generation.md");
   const left = () => Math.max(1000, deadline - Date.now());
+  const headers: Record<string, string> = { Accept: "application/json", "Content-Type": "application/json" };
+  if (key) headers.Authorization = `Bearer ${key}`;
   // NVCF holds the request open up to this long before answering 202 with an id to poll.
-  const headers = { Authorization: `Bearer ${key}`, Accept: "application/json", "Content-Type": "application/json", "NVCF-POLL-SECONDS": String(Math.min(240, Math.floor(left() / 1000) - 5)) };
+  if (!SELF_HOSTED) headers["NVCF-POLL-SECONDS"] = String(Math.min(240, Math.floor(left() / 1000) - 5));
   const until = () => (signal ? AbortSignal.any([signal, AbortSignal.timeout(left())]) : AbortSignal.timeout(left()));
   let res = await fetch(COSMOS_URL, { method: "POST", headers, body: JSON.stringify(body), signal: until() });
   while (res.status === 202) {
@@ -34,12 +39,12 @@ async function callCosmos(body: Record<string, unknown>, deadline: number, signa
     if (!reqId) throw new Error("cosmos3-nano accepted the job but returned no request id to poll");
     if (Date.now() > deadline) throw new Error("the video was still rendering when this step ran out of time; call generate_video again with the same arguments");
     await new Promise((r) => setTimeout(r, 3000));
-    res = await fetch(`${NVCF_STATUS}/${reqId}`, { headers: { Authorization: headers.Authorization, Accept: "application/json" }, signal: until() });
+    res = await fetch(`${NVCF_STATUS}/${reqId}`, { headers: { Authorization: headers.Authorization ?? "", Accept: "application/json" }, signal: until() });
   }
   const text = await res.text();
   if (res.status === 404 && /not found for account/i.test(text))
     throw new Error(
-      "Video generation isn't enabled for this deployment's NVIDIA account (cosmos3-nano is a preview model, enabled per account). This is not transient and retrying won't help: don't retry and don't fall back to still images. Stop and tell the user to issue an API key from the cosmos3-nano page on build.nvidia.com and set it as COSMOS_API_KEY in the deployment's environment variables."
+      "Video generation isn't available on this deployment: NVIDIA's hosted API offers no image-to-video model to its key (cosmos3-nano isn't a public function). This is not transient and retrying won't help: don't retry and don't fall back to still images. Stop and tell the user that video generation needs a self-hosted Cosmos NIM (set COSMOS_URL) or a paid video provider, as described in docs/video-generation.md."
     );
   if (res.status === 422) throw new Error(`cosmos3-nano refused this request (${text.slice(0, 240)}). Reword the prompt (drop anything that could read as unsafe) and try again.`);
   if (!res.ok) throw new Error(`cosmos3-nano ${res.status}: ${text.slice(0, 300)}`);

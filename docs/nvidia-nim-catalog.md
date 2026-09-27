@@ -62,7 +62,7 @@ Kept here in case a future feature needs one of them:
 - **Safety / moderation**: llama-guard-4-12b, llama-3.1-nemoguard-8b-content-safety,
   llama-3.1-nemoguard-8b-topic-control, llama-3.1-nemotron-safety-guard-8b-v3,
   nemotron-3.5-content-safety, nemoguard-jailbreak-detect.
-- **Video**: cosmos-transfer2.5-2b, cosmos3-nano (generation); Active Speaker Detection, eyecontact,
+- **Video**: cosmos-transfer2.5-2b, cosmos3-nano (generation; listed in the catalog, but not callable with this key: see [video-generation.md](video-generation.md)); Active Speaker Detection, eyecontact,
   LipSync, Relighting, synthetic-video-detector, Video Super Resolution NIM, wan2.2-animate-2-14b.
 - **Science / biology / chemistry**: Boltz-2, diffdock, evo2-40b/-40b-forward/-7b-forward, genmol,
   molmim, msa-search, openfold2, openfold3, proteinmpnn, rfdiffusion (protein/molecule structure
