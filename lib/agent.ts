@@ -3,6 +3,7 @@ import { chat, modelKeyFor, MODELS, type ChatMessage, type ModelKey, type ToolSc
 import { makeEmitter, type AgentEvent, type Emit } from "@/lib/events";
 import { FILE_TOOL_SCHEMAS, makeFileTools, cleanPath } from "@/lib/tools/files";
 import { SourceRegistry, WEB_TOOL_SCHEMAS } from "@/lib/tools/tavily";
+import { GENAI_TOOL_SCHEMAS, generateImage, generateMesh3D } from "@/lib/tools/genai";
 import { makeRepoTools, REPO_TOOL_SCHEMAS } from "@/lib/tools/github";
 import { finalizeArtifact, joinModuleScripts, removeEmDashes, unfinishedDocument } from "@/lib/finalize";
 import { checkDesign, type CheckResult } from "@/lib/tools/visualCheck";
@@ -232,7 +233,7 @@ function systemPrompt(opts: { templateBrief: string; designSystem: string; codeb
 - Writing style, in the design's copy and in your replies: never use em dashes (—). Use a comma, colon, period or parentheses instead. Use an en dash (–) only for number ranges like 2019–2023.
 - Commit to a clear visual direction: a deliberate type pairing (Google Fonts), a restrained palette defined as CSS custom properties on :root, one accent color used with intent, and a consistent spacing scale.
 - Strong hierarchy and real, specific content: never lorem ipsum, never "Feature 1". Invent plausible names, numbers and copy when the user didn't provide them.
-- Icons are inline SVG (simple 1.5px-stroke line icons), never emoji. Images: use CSS gradients, SVG illustration or shapes rather than external stock photo URLs.
+- Icons are inline SVG (simple 1.5px-stroke line icons), never emoji. Images: CSS gradients, SVG illustration or shapes cover most needs, and an external stock photo URL never works (it isn't hosted anywhere this can load it, on canvas or in the check). When a design genuinely calls for a real photo or illustration (a hero image, a product shot, a background), call generate_image instead of faking one; it returns a real, ready-to-use URL.
 - Layout with CSS grid/flexbox; it must look right at the canvas width and be responsive. Check contrast. Avoid generic "AI" aesthetics: no purple-blue gradients everywhere, no glassmorphism by default, no centered-everything.
 - SVG animation: a CSS transform or animation on an SVG element replaces its transform attribute, so never animate an element that is positioned with transform="…". Position with an outer <g transform="translate(…)"> and animate an inner <g> (set transform-box: fill-box and a transform-origin on it). Never run two animations that both set transform on the same element; nest groups instead.
 - Printable formats (documents, slides, résumés) include @page and page-break rules so browser print → PDF looks right.
@@ -501,7 +502,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     if (phase && settings.buildModel && !buildModel) buildModel = settings.buildModel;
     const phaseFresh = !!settings.phaseFresh;
     if (phaseFresh) delete settings.phaseFresh;
-    const baseTools = [...WEB_TOOL_SCHEMAS, ...(repo ? REPO_TOOL_SCHEMAS : [])];
+    const baseTools = [...WEB_TOOL_SCHEMAS, ...GENAI_TOOL_SCHEMAS, ...(repo ? REPO_TOOL_SCHEMAS : [])];
     const tools: ToolSchema[] =
       // A half-written file always needs the file tools, whatever the step.
       phase === "plan" && !settings.partial
@@ -1037,6 +1038,18 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
                 const f = await sources.fetch(args);
                 result = f;
                 summary = { source: { id: f.id, title: f.title, url: sources.sources.get(f.id)?.url } };
+                break;
+              }
+              case "generate_image": {
+                const img = await generateImage(db, projectId, args);
+                result = img;
+                summary = { url: img.url };
+                break;
+              }
+              case "generate_3d_model": {
+                const mesh = await generateMesh3D(db, projectId, args);
+                result = mesh;
+                summary = { url: mesh.url };
                 break;
               }
               case "repo_tree":
