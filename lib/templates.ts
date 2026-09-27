@@ -85,7 +85,7 @@ export const TEMPLATES: Template[] = [
       ],
     },
     brief:
-      'A printable document. Use US Letter pages (<div class="page"> at 8.5in × 11in with real margins) shown as paper sheets with a soft shadow on a neutral background, plus @page rules so each .page prints as one sheet, and declare the page count with <meta name="pages" content="N">. Editorial typography: a clear type scale, measured line length, running header/footer where it helps.',
+      'A printable document. Use US Letter pages (<div class="page"> at 8.5in × 11in with real margins) shown as paper sheets with a soft shadow on a neutral background, plus @page rules so each .page prints as one sheet. Give .page a min-height, never a fixed height with overflow hidden: a sheet with more than a page of content would silently lose the rest in print, so start a new .page where the content fills one. Declare the page count with <meta name="pages" content="N">. Editorial typography: a clear type scale, measured line length, running header/footer where it helps.',
     scope: { question: "How long and deep?", options: ["One page", "Short guide (3 to 5 pages)", "Full handbook (10 to 20 pages)", "Complete reference (30+ pages)"], default: "Short guide (3 to 5 pages)" },
   },
   {

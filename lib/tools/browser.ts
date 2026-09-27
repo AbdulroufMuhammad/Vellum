@@ -14,12 +14,74 @@ function allowedStorageHost() {
 // There's no GPU on the server: 3D designs (three.js) render with software WebGL, which newer Chromium only allows with this flag.
 const WEBGL_ARGS = ["--enable-unsafe-swiftshader", "--use-angle=swiftshader"];
 
+// Browsers this process has open right now; with none open, any browser process of ours still alive is a leftover.
+let openBrowsers = 0;
+
+/** Process ids of running processes started from this executable (Linux /proc). */
+async function processesOf(executable: string): Promise<number[]> {
+  const fs = await import("node:fs/promises");
+  const ids = (await fs.readdir("/proc").catch(() => [] as string[])).filter((d) => /^\d+$/.test(d) && Number(d) !== process.pid);
+  const found: number[] = [];
+  for (const id of ids) {
+    const cmd = await fs.readFile(`/proc/${id}/cmdline`, "utf8").catch(() => "");
+    if (cmd.startsWith(executable)) found.push(Number(id));
+  }
+  return found;
+}
+
+/**
+ * The serverless browser runs as one process (--single-process) that can take a moment to exit after
+ * close(), or hang after a renderer crash. On a warm instance that leftover still holds its memory
+ * (well over a gigabyte for a long document), so the next check's page crashed as soon as it loaded,
+ * and every check after it too. Kill leftovers before launching, and wait for them to be gone.
+ */
+async function reapLeftovers(executable: string) {
+  if (openBrowsers > 0) return;
+  const stray = await processesOf(executable);
+  if (!stray.length) return;
+  for (const id of stray) {
+    try {
+      process.kill(id, "SIGKILL");
+    } catch {}
+  }
+  for (let i = 0; i < 20 && (await processesOf(executable)).length; i++) await new Promise((r) => setTimeout(r, 100));
+  console.log(`[browser] killed ${stray.length} leftover browser process${stray.length > 1 ? "es" : ""}`);
+}
+
+/** Counts the browser as open until it has closed, and makes close() wait until its process is really gone. */
+function tracked(browser: Browser, executable: string): Browser {
+  let closed = false;
+  const done = () => {
+    if (!closed) {
+      closed = true;
+      openBrowsers--;
+    }
+  };
+  browser.on("disconnected", done);
+  const close = browser.close.bind(browser);
+  browser.close = async (options) => {
+    await close(options).catch(() => {});
+    done();
+    await reapLeftovers(executable).catch(() => {});
+  };
+  return browser;
+}
+
 export async function launchBrowser(): Promise<Browser> {
   const { chromium } = await import("playwright-core");
   if (process.env.CHROMIUM_PATH) return chromium.launch({ executablePath: process.env.CHROMIUM_PATH, args: WEBGL_ARGS });
   if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
     const sparticuz = (await import("@sparticuz/chromium")).default;
-    return chromium.launch({ executablePath: await sparticuz.executablePath(), args: [...sparticuz.args, ...WEBGL_ARGS], headless: true });
+    const executablePath = await sparticuz.executablePath();
+    await reapLeftovers(executablePath).catch(() => {});
+    // Counted from before the launch, so a check starting alongside never mistakes this one for a leftover.
+    openBrowsers++;
+    try {
+      return tracked(await chromium.launch({ executablePath, args: [...sparticuz.args, ...WEBGL_ARGS], headless: true }), executablePath);
+    } catch (e) {
+      openBrowsers--;
+      throw e;
+    }
   }
   // Local development: Playwright's own installed browser.
   return chromium.launch({ args: WEBGL_ARGS });

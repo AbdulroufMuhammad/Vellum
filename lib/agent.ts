@@ -141,6 +141,13 @@ function automatedFindings(c: CheckResult): string[] {
   if (d?.cutOff) out.push("The model is cut off by the frame: fit the camera to the model's bounding box.");
   else if (d?.tiny) out.push(`The model is small in the frame (it spans ${Math.round((d.fill ?? 0) * 100)}% of it on its longer side): move the camera in so it fills about 60 to 75% of the frame, fitting the camera distance to the model's bounding box without extra margin.`);
   const p = a.print;
+  const eg = (x: { count: number; examples: string[] }) => `${x.examples.join("; ")}${x.count > x.examples.length ? ` and ${x.count - x.examples.length} more` : ""}`;
+  if (p?.cut)
+    out.push(
+      `Printed, ${p.cut.count} sheet${p.cut.count > 1 ? "s are" : " is"} cut off: the sheet has a fixed height with its overflow hidden, so everything past its bottom edge never prints (about ${p.cut.hiddenPages} pages of content are lost): ${eg(p.cut)}. A page count reached by hiding content doesn't count. In print, let sheets grow (min-height, not height; overflow visible), then make the content fit: tighten spacing and type a little, trim wording, or give a long section more sheets${p.target ? " and cut content elsewhere to stay within the page count" : ""}.`
+    );
+  if (p?.spill) out.push(`Printed, ${p.spill.count} fixed-height sheet${p.spill.count > 1 ? "s run" : " runs"} out past the bottom edge, onto the next sheet: ${eg(p.spill)}. Use min-height instead of a fixed height, and fit the content.`);
+  if (p?.blank) out.push(`Printed, ${p.blank.count} sheet${p.blank.count > 1 ? "s run" : " runs"} just past a page break and leave a mostly empty page: ${eg(p.blank)}. Tighten each one to end on the page before, or move content so the page is used.`);
   if (p?.target && (p.pages < p.target[0] || p.pages > p.target[1])) {
     const want = p.target[0] === p.target[1] ? `exactly ${p.target[0]} page${p.target[0] > 1 ? "s" : ""}` : `${p.target[0]} to ${p.target[1]} pages`;
     out.push(
@@ -222,7 +229,7 @@ function systemPrompt(opts: { templateBrief: string; designSystem: string; codeb
 - Each reply can only hold so much. For a large file, write_file the head, styles and first sections, then append_file the rest in one or two more calls, rather than one giant write_file.
 - When a file is built in parts, never split its code across several <script> tags: separate <script type="module"> blocks don't share variables, so the page breaks. Write the HTML and CSS in the first parts and all the JavaScript as ONE script in the last part (or one part per call that each stands alone).
 - Keep data-el attributes on elements intact; the user's direct edits rely on them.
-- Printable documents (résumés, one-pagers, reports, letters) are designed as paper. Set an @page rule with the size and margins, declare the intended page count with <meta name="pages" content="1"> (or a range like "3-5"), and make it print to exactly that. The printed layout must match the screen layout (same columns and sidebar): keep phone-only rules for screens with @media screen and (max-width: …), and use break-inside: avoid on entries (and break-after: avoid on headings) so nothing splits awkwardly. The automatic check prints the file and tells you the real page count; if it's over, tighten spacing and type or trim wording, never let it spill onto an extra page.
+- Printable documents (résumés, one-pagers, reports, letters) are designed as paper. Set an @page rule with the size and margins, declare the intended page count with <meta name="pages" content="1"> (or a range like "3-5"), and make it print to exactly that. The printed layout must match the screen layout (same columns and sidebar): keep phone-only rules for screens with @media screen and (max-width: …), and use break-inside: avoid on entries (and break-after: avoid on headings) so nothing splits awkwardly. The automatic check prints the file and tells you the real page count; if it's over, tighten spacing and type or trim wording, never let it spill onto an extra page. Never hit the count by hiding content: a page box gets min-height, not a fixed height with overflow hidden, because whatever doesn't fit is then silently lost on paper (the check measures every sheet for this).
 
 ## How you work
 - Think briefly and practically: decide the direction, then build. Don't deliberate at length over details (exact pixel values, alternatives you won't use); the first version can be refined after it's on the canvas.
@@ -675,9 +682,10 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     /** Render a file in a browser and review it; shared by the agent's own check_design calls and the automatic check. */
     const runCheck = async (path: string) => {
       const f = await fileTools.read_file({ path });
+      const c = await checkDesign(db, projectId, f.content, { deadline, signal, request: requestText(), printPages, renderTimeoutMs: phase === "check" || /three|webgl/i.test(f.content) ? 90_000 : undefined });
+      // Counted only once it ran: a check the server's browser couldn't finish doesn't use up the file's checks.
       checks.set(f.path, (checks.get(f.path) ?? 0) + 1);
       if (unchecked === f.path) unchecked = null;
-      const c = await checkDesign(db, projectId, f.content, { deadline, signal, request: requestText(), printPages, renderTimeoutMs: phase === "check" || /three|webgl/i.test(f.content) ? 90_000 : undefined });
       const auto = automatedFindings(c);
       const serious = c.issues.filter((i) => i.severity !== "low");
       const visual = c.issues.map((i) => `${i.severity === "high" ? "High" : i.severity === "medium" ? "Medium" : "Low"}: ${i.where ? `${i.where}: ` : ""}${i.problem}`);
@@ -730,16 +738,21 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
         await emit({ type: "note", payload: { text: "Checking the result in a real browser." } });
         await emit({ type: "tool-call", payload: { callId, name: "check_design", args: { path } } });
         let out: Awaited<ReturnType<typeof runCheck>> | null = null;
+        let failed = "";
         try {
           out = await runCheck(path);
           await emit({ type: "tool-result", payload: { callId, name: "check_design", ...out.summary } });
         } catch (e) {
           unchecked = null;
-          await emit({ type: "tool-result", payload: { callId, name: "check_design", path, error: e instanceof Error ? e.message : String(e) } });
+          failed = e instanceof Error ? e.message : String(e);
+          await emit({ type: "tool-result", payload: { callId, name: "check_design", path, error: failed } });
         }
         delete settings.pendingCheck;
         await db.from("projects").update({ settings }).eq("id", projectId);
-        if (out?.needsFix) {
+        if (failed) {
+          checkedClean = true;
+          await finish(`${settings.buildReply || "Built it."}\n\nThe browser check couldn't render "${path}", so it hasn't been verified.`);
+        } else if (out?.needsFix) {
           convo.push({ role: "assistant", content: settings.buildReply || "Built it." });
           convo.push({
             role: "user",
@@ -926,8 +939,10 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             break;
           }
           const tooLate = deadline - Date.now() < CHECK_MIN_MS;
+          // What the user is told about the final version when the check couldn't clear it.
+          let checkNote = "";
           // Postpone a check to the next round at most once, so a short round can never pause forever.
-          if (unchecked && autoChecks < 2 && !(tooLate && checkDeferred)) {
+          if (unchecked && !(tooLate && checkDeferred)) {
             if (tooLate) {
               settings.pendingCheck = unchecked;
               await db.from("projects").update({ settings }).eq("id", projectId);
@@ -935,6 +950,8 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
               await emit({ type: "continue", payload: {} });
               break;
             }
+            // After two rounds of fixes the last version is still checked, but only to report on, so the loop always ends.
+            const reportOnly = autoChecks >= 2;
             autoChecks++;
             const path = unchecked;
             const callId = `auto-check-${step}`;
@@ -946,13 +963,19 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
               await emit({ type: "tool-result", payload: { callId, name: "check_design", ...out.summary } });
             } catch (e) {
               unchecked = null;
+              checkNote = `The browser check couldn't render the final version of "${path}", so it hasn't been verified.`;
               await emit({ type: "tool-result", payload: { callId, name: "check_design", path, error: e instanceof Error ? e.message : String(e) } });
             }
             if (settings.pendingCheck) {
               delete settings.pendingCheck;
               await db.from("projects").update({ settings }).eq("id", projectId);
             }
-            if (out?.needsFix) {
+            if (out?.needsFix && reportOnly) {
+              checkNote = `The last browser check of "${out.path}" still found problems I haven't fixed yet:\n${out.problems
+                .slice(0, 6)
+                .map((p) => `- ${p.length > 260 ? `${p.slice(0, 257)}...` : p}`)
+                .join("\n")}\nSay "fix these" and I'll carry on.`;
+            } else if (out?.needsFix) {
               convo.push({ role: "assistant", content: r.content || "Done." });
               convo.push({
                 role: "user",
@@ -965,9 +988,11 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             delete settings.pendingCheck;
             await db.from("projects").update({ settings }).eq("id", projectId);
           }
+          if (!checkNote && unchecked && /\.html?$/i.test(unchecked)) checkNote = `The final version of "${unchecked}" hasn't been through the browser check yet (this step ran out of time).`;
           const specFile = dsSpecFile();
           if (specFile) await autoSaveDesignSystem(specFile);
-          await finish(text || (touched.size ? "Done. It's on the canvas." : "I couldn't produce anything for that. Try rephrasing?"));
+          const reply = text || (touched.size ? "Done. It's on the canvas." : "I couldn't produce anything for that. Try rephrasing?");
+          await finish(checkNote ? `${reply}\n\n${checkNote}` : reply);
           break;
         }
         if (text) await emit({ type: "note", payload: { text: removeEmDashes(text).slice(0, 240) } });

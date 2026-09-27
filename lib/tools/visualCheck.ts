@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { chat, type ContentPart, type ModelKey } from "@/lib/gateway";
 import { BUCKET } from "@/lib/tools/files";
+import type { Page } from "playwright-core";
 import { launchBrowser, openDesign } from "@/lib/tools/browser";
 
 const WIDTH = 1280;
@@ -17,7 +18,16 @@ export type Automated = {
   emptyPage: boolean;
   height: number;
   /** For printable designs (an @page rule): how many pages it prints to, and how many it should. */
-  print?: { pages: number; target: [number, number] | null };
+  print?: {
+    pages: number;
+    target: [number, number] | null;
+    /** Sheets whose overflow is hidden, so part of them never prints, and about how many pages that hides. */
+    cut?: { count: number; examples: string[]; hiddenPages: number };
+    /** Fixed-height sheets whose content runs out past them onto the next sheet. */
+    spill?: { count: number; examples: string[] };
+    /** Sheets that run just past a page boundary, leaving a mostly empty page. */
+    blank?: { count: number; examples: string[] };
+  };
   /** For 3D scenes that expose window.__vellum3d: parts attached to nothing, and how the model sits in the frame. */
   threeD?: { parts: number; floating: string[]; cutOff: boolean; tiny: boolean; fill?: number; hook: boolean };
 };
@@ -344,6 +354,80 @@ const INSPECT_BABYLON = String.raw`(() => {
   return { hook: true, parts: n, floating: floating.slice(0, 6), cutOff: out, tiny, fill: Math.round(fill * 100) / 100 };
 })()`;
 
+/**
+ * Runs in the page with print styles applied, at the printable width, given the printable page height in px.
+ * Looks at every page-sized box in the document, not just the first pages a screenshot shows:
+ * - cut: a sheet taller than its box whose overflow is hidden, so the rest never prints
+ *   (a fixed height:11in + overflow:hidden "page" holding two pages of text hits any page count while losing half of it);
+ * - spill: a fixed-height sheet whose content runs out past it onto the next sheet;
+ * - blank: a sheet that runs a little past a page boundary, leaving a page that's mostly empty.
+ * Also returns where to photograph: the first page and the first sheets with a problem.
+ */
+const INSPECT_PRINT = String.raw`((pageH) => {
+  const clean = (s) => (s || "").trim().replace(/\s+/g, " ");
+  // Rendered math carries a hidden MathML copy and its TeX source: quote only what shows.
+  const words = (el) => {
+    if (!el.querySelector(".katex-mathml, annotation")) return clean(el.textContent);
+    const c = el.cloneNode(true);
+    c.querySelectorAll(".katex-mathml, annotation").forEach((m) => m.remove());
+    return clean(c.textContent);
+  };
+  const name = (el) => words(el.querySelector("h1,h2,h3") || el).slice(0, 70);
+  const top = (el) => el.getBoundingClientRect().top + scrollY;
+  const cut = [], spill = [], blank = [], shots = [];
+  let hidden = 0, sheets = 0;
+  const reported = [];
+  for (const el of Array.from(document.body.querySelectorAll("*"))) {
+    const cs = getComputedStyle(el);
+    if (cs.display === "none" || cs.position === "fixed" || cs.display === "inline") continue;
+    const h = el.clientHeight;
+    if (h < pageH * 0.6) continue;
+    const pageBreak = /page|always|left|right/.test(cs.breakAfter + cs.breakBefore + cs.pageBreakAfter + cs.pageBreakBefore);
+    if (pageBreak) sheets++;
+    if (reported.some((r) => r.contains(el))) continue;
+    const over = el.scrollHeight - h;
+    const clips = /(hidden|clip|auto|scroll)/.test(cs.overflowY);
+    if (over > 12 && (clips || pageBreak)) {
+      // Only text that runs past the bottom edge counts: decoration placed off the edge on purpose (a slide's shapes) doesn't.
+      const bottom = top(el) + h;
+      let lost = "", past = 0;
+      for (const c of Array.from(el.querySelectorAll("h1,h2,h3,h4,p,li,table,figure,pre,blockquote,.eq"))) {
+        const r = c.getBoundingClientRect();
+        if (!r.height || r.bottom + scrollY <= bottom + 4 || /absolute|fixed/.test(getComputedStyle(c).position) || !words(c)) continue;
+        if (!lost) lost = words(c).slice(0, 60);
+        past = Math.max(past, r.bottom + scrollY - bottom);
+      }
+      if (lost) {
+        const where = '"' + name(el) + '" (from "' + lost + '")';
+        if (clips) { cut.push(where); hidden += Math.min(over, past); } else spill.push(where);
+        reported.push(el);
+        if (shots.length < 3) shots.push({ y: Math.max(0, Math.round(bottom - pageH * 0.75)), why: clips ? "cut" : "spill" });
+        continue;
+      }
+    }
+    if (pageBreak && h > pageH * 1.02) {
+      const used = (h % pageH) / pageH;
+      if (used > 0 && used < 0.25) {
+        blank.push('"' + name(el) + '" (the last of its ' + Math.ceil(h / pageH) + " pages is only " + Math.max(1, Math.round(used * 100)) + "% used)");
+        if (shots.length < 3) shots.push({ y: Math.round(top(el) + h - used * pageH - pageH * 0.5), why: "blank" });
+      }
+    }
+  }
+  return { cut: cut.slice(0, 5), cutCount: cut.length, spill: spill.slice(0, 5), spillCount: spill.length, blank: blank.slice(0, 5), blankCount: blank.length, hiddenPages: Math.round((hidden / pageH) * 10) / 10, sheets, shots };
+})`;
+
+type PrintReport = {
+  cut: string[];
+  cutCount: number;
+  spill: string[];
+  spillCount: number;
+  blank: string[];
+  blankCount: number;
+  hiddenPages: number;
+  sheets: number;
+  shots: { y: number; why: string }[];
+};
+
 type PageReport = {
   lowContrast: Automated["lowContrast"];
   clippedText: string[];
@@ -437,12 +521,26 @@ function crashMessage(html: string, when: string) {
   return `the page's renderer crashed ${when}, most likely because the page is too heavy for the browser to hold at once (very large images, huge inline data or an endless loop). Lighten it, then try again.`;
 }
 
+/** Tall pages are shot by scrolling a window-sized view: a full-page capture of a very long document makes the browser
+ * lay out one enormous surface, which is slow and can push the serverless browser out of memory. */
+const TALL_PAGE = 8000;
+
+async function shoot(page: Page, y: number, width: number, height: number, full: number): Promise<Buffer> {
+  if (full > TALL_PAGE) {
+    await page.setViewportSize({ width, height });
+    await page.evaluate(`scrollTo(0, ${Math.max(0, Math.round(y))})`);
+    await page.waitForTimeout(250);
+    return page.screenshot({ type: "jpeg", quality: 65, timeout: 12_000 });
+  }
+  return page.screenshot({ type: "jpeg", quality: 65, fullPage: true, timeout: 12_000, clip: { x: 0, y, width, height: Math.min(height, full - y) } });
+}
+
 async function render(html: string, printTarget: [number, number] | null): Promise<{ automated: Automated; tiles: Buffer[]; printTiles: Buffer[]; views: Buffer[] }> {
   // Step timings go to the server log, so a slow check can be traced to the step that's slow.
   const t0 = Date.now();
   const laps: string[] = [];
   const lap = (step: string) => laps.push(`${step} ${((Date.now() - t0) / 1000).toFixed(1)}s`);
-  const browser = await launchBrowser();
+  let browser = await launchBrowser();
   lap("launch");
   const tiles: Buffer[] = [];
   const printTiles: Buffer[] = [];
@@ -452,11 +550,16 @@ async function render(html: string, printTarget: [number, number] | null): Promi
   const printable = isPrintable(html) || !!printTarget || !!declaredPages(html);
   try {
     const jsErrors: string[] = [];
-    const page = await openDesign(browser, html, { width: WIDTH, height: 800 }, (msg) => jsErrors.push(msg));
-    if (page.isClosed())
-      throw new Error(
-        crashMessage(html, "while it loaded")
-      );
+    let page = await openDesign(browser, html, { width: WIDTH, height: 800 }, (msg) => jsErrors.push(msg));
+    // One retry in a fresh browser: a crash on load is usually the server's browser short of memory, not the page.
+    if (page.isClosed()) {
+      laps.push("crashed on load, retrying");
+      await browser.close().catch(() => {});
+      browser = await launchBrowser();
+      jsErrors.length = 0;
+      page = await openDesign(browser, html, { width: WIDTH, height: 800 }, (msg) => jsErrors.push(msg));
+    }
+    if (page.isClosed()) throw new Error(crashMessage(html, "while it loaded"));
     lap("open");
     // Canvas and WebGL scenes: give them a moment to draw, then stop their animation loops. Software WebGL on the
     // server runs at a few frames a second, and an endless render loop starves the screenshots until they time out.
@@ -471,8 +574,7 @@ async function render(html: string, printTarget: [number, number] | null): Promi
     const height = Math.min(desktop.height, TILE * (printable ? 2 : MAX_TILES));
     // A page no taller than the window is one viewport shot: full-page capture resizes the page, which makes WebGL re-render.
     for (let y = desktop.height <= 810 ? height : 0; y < height; y += TILE) {
-      const shot = await page
-        .screenshot({ type: "jpeg", quality: 65, fullPage: true, timeout: 12_000, clip: { x: 0, y, width: WIDTH, height: Math.min(TILE, height - y) } })
+      const shot = await shoot(page, y, WIDTH, Math.min(TILE, height - y), desktop.height)
         .catch((e: Error) => {
           laps.push(`screenshot failed: ${e.message.split("\n")[0].slice(0, 160)}`);
           return null;
@@ -519,6 +621,7 @@ async function render(html: string, printTarget: [number, number] | null): Promi
         lap(`3d(${threeD.parts} parts, ${views.length} views)`);
       } else if (/three\.js|babylon/i.test(html)) threeD = { parts: 0, floating: [], cutOff: false, tiny: false, hook: false };
     }
+    await page.evaluate("scrollTo(0, 0)").catch(() => {});
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForTimeout(300);
     const mobile = (await page.evaluate("Math.max(0, document.documentElement.scrollWidth - window.innerWidth)")) as number;
@@ -529,13 +632,22 @@ async function render(html: string, printTarget: [number, number] | null): Promi
       await page.setViewportSize({ width: WIDTH, height: 800 });
       const pdf = await page.pdf({ preferCSSPageSize: true, printBackground: true, format: "Letter" });
       print = { pages: countPdfPages(pdf), target: declaredPages(html) ?? printTarget };
+      lap("pdf");
       const area = printArea(html);
       await page.emulateMedia({ media: "print" });
       await page.setViewportSize({ width: area.width, height: area.height });
       await page.waitForTimeout(200);
       const full = (await page.evaluate("document.documentElement.scrollHeight")) as number;
-      for (let y = 0; y < Math.min(full, area.height * 2); y += area.height) {
-        printTiles.push(await page.screenshot({ type: "jpeg", quality: 65, fullPage: true, clip: { x: 0, y, width: area.width, height: Math.min(area.height, full - y) } }));
+      // Every sheet is inspected; the reviewer sees the first page plus the sheets with a problem, wherever they are.
+      const sheets = (await page.evaluate(`${INSPECT_PRINT}(${area.height})`).catch(() => null)) as PrintReport | null;
+      if (sheets?.cutCount) print.cut = { count: sheets.cutCount, examples: sheets.cut, hiddenPages: sheets.hiddenPages };
+      if (sheets?.spillCount) print.spill = { count: sheets.spillCount, examples: sheets.spill };
+      if (sheets?.blankCount) print.blank = { count: sheets.blankCount, examples: sheets.blank };
+      const spots = [0, ...(sheets?.shots ?? []).map((s) => Math.min(Math.max(0, s.y), Math.max(0, full - area.height)))];
+      if (spots.length === 1 && full > area.height * 1.5) spots.push(area.height);
+      for (const y of spots.filter((y, i) => spots.findIndex((o) => Math.abs(o - y) < area.height / 2) === i).slice(0, 3)) {
+        const shot = await shoot(page, y, area.width, Math.min(area.height, full - y), full).catch(() => null);
+        if (shot) printTiles.push(shot);
       }
     }
     lap("done");
@@ -605,7 +717,7 @@ export async function checkDesign(
       ? [
           {
             type: "text" as const,
-            text: `The next ${printTiles.length === 1 ? "image is" : `${printTiles.length} images are`} the same design as printed on paper${automated.print ? ` (it prints to ${automated.print.pages} page${automated.print.pages === 1 ? "" : "s"})` : ""}. Check the printed layout too: it should keep the designed layout (columns, sidebar), with nothing cut off, overlapping or pushed onto an extra page.`,
+            text: `The next ${printTiles.length === 1 ? "image is" : `${printTiles.length} images are`} the same design as printed on paper${automated.print ? ` (it prints to ${automated.print.pages} page${automated.print.pages === 1 ? "" : "s"})` : ""}: its first page${printTiles.length > 1 ? ", then the places where the automatic check found a printing problem" : ""}. Check the printed layout too: it should keep the designed layout (columns, sidebar), with nothing cut off, clipped, squashed, overlapping or pushed onto an extra page.`,
           },
           ...printTiles.map((t) => ({ type: "image_url" as const, image_url: { url: `data:image/jpeg;base64,${t.toString("base64")}` } })),
         ]
