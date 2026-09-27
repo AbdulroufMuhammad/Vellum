@@ -661,8 +661,25 @@ export default function ProjectView({ initial, systems, models }: { initial: Pro
   const drafting = draft != null && draft.path === activePath;
   const pageLabel = pages > 0 ? `${pages} page${pages > 1 ? "s" : ""}` : activeFile ? `v${viewVersion ?? activeFile.version}` : "";
 
+  const mobileTab: "chat" | "files" | "canvas" = chatOpen ? "chat" : showFiles ? "files" : "canvas";
+  const gotoTab = (tab: "chat" | "files" | "canvas") => {
+    setChatOpen(tab === "chat");
+    setShowFiles(tab === "files");
+  };
+
   return (
     <div className={`workspace${chatOpen ? "" : " chat-closed"}`}>
+      <nav className="mobile-tabs">
+        <button type="button" className={mobileTab === "chat" ? "on" : ""} onClick={() => gotoTab("chat")} aria-label="Chat">
+          <IconComment size={18} />
+        </button>
+        <button type="button" className={mobileTab === "files" ? "on" : ""} onClick={() => gotoTab("files")} aria-label="Pages">
+          <IconFile size={18} />
+        </button>
+        <button type="button" className={mobileTab === "canvas" ? "on" : ""} onClick={() => gotoTab("canvas")} aria-label="Canvas">
+          <IconPlay size={18} />
+        </button>
+      </nav>
       {chatOpen && (
         <aside className="chat">
           <div className="chat-head">
