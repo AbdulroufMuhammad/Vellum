@@ -1,0 +1,34 @@
+/**
+ * Scroll-driven cinematic pages: real AI-generated stills (generate_image), layered and crossfaded
+ * with scroll-linked Ken Burns and parallax motion, instead of static hero images. This app has no
+ * connected video-generation account (the technique this is adapted from, seen in AbdulroufMuhammad's
+ * scroll-world repo, drives its motion with real AI-generated video "dive-in" clips from paid
+ * Monid/Higgsfield accounts), so the achievable version here fakes camera-move depth with layered
+ * stills and CSS transforms driven by scroll position, in one self-contained HTML file.
+ */
+
+const TRIGGER = /\b(cinematic|scroll[- ]?driven|scroll[- ]?scrub|scrollytelling|parallax|fly[- ]?through|dive[- ]?in|product film|scroll story)\b/i;
+
+/** Whether the request calls for a scroll-driven cinematic treatment, worth adding this guide for. */
+export function isCinematicRequest(text: string): boolean {
+  return TRIGGER.test(text);
+}
+
+/** The agent's playbook for scroll-driven cinematic pages built from generated stills. */
+export function cinematicGuide() {
+  return `## Cinematic scroll (AI stills, not static images)
+Break the story into 5-8 scenes (a sequence of moments, not sections of a normal page). For each scene, call generate_image for a real still instead of a gradient or icon: write one shared style phrase (lighting, color grade, medium, e.g. "cinematic, volumetric light, teal and amber grade, shot on 35mm") and append it to every scene's prompt so all the stills read as one continuous world, not unrelated pictures. Where a scene needs foreground depth, generate a second image for it: same style phrase, prompt it for a single foreground subject on a plain dark or transparent-reading background, so it can be layered over the background still.
+
+Structure: one tall wrapper, height = number of scenes * 100vh (or more per scene for a slower scrub). Each scene is a position: sticky; top: 0; height: 100vh; div holding its layered <img>s, in DOM order, each pinned inside the same 100vh viewport window as the wrapper scrolls past it; this is what makes it feel scrubbed rather than a normal one-per-screen scroll. Preload every scene's images before the page is interactive (new Image().src for each, or await decode()) so the first scroll never shows a blank frame.
+
+Drive motion from scroll position, not from time or hover:
+- On scroll (rAF-throttled, one listener), compute each scene's progress: (viewportMidpoint - sceneTop) / sceneHeight, clamped 0 to 1.
+- Ken Burns: transform: scale(1 + t * 0.12) translateY(t * -30px) on the background still (t = progress); a slow, continuous zoom/drift reads as camera movement even on a static image.
+- Parallax depth: a foreground layer moves faster than the background (translateY(t * -80px) vs the background's -30px) so they separate in depth as the scene scrubs.
+- Crossfade between scenes: over the last ~25% of a scene's progress, fade its opacity from 1 to 0 while the next scene (already sticky underneath) is reaching its own early progress at full opacity; this is the connector moment, the one scroll-world gets from a frame-locked video clip, done here as a plain opacity blend between two stills.
+- Only animate transform and opacity (never layout properties): set will-change: transform, opacity on the animated layers so it stays smooth.
+
+Copy sits in its own layer above the images (a heading, a short line, sometimes nothing) with its own scroll-linked fade/rise, timed to appear after the scene's images have mostly resolved (progress > 0.15) and leave before the crossfade starts.
+
+Keep it to a real story with a beginning, middle and turn, matching the request's product or narrative; never generate filler scenes just to hit a count.`;
+}

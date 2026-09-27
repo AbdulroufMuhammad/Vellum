@@ -14,6 +14,7 @@ import { DEFAULT_DEPTH, depthFrom, withDepthQuestion } from "@/lib/research";
 import { planPreviewHtml, planningPlaceholderHtml } from "@/lib/planPreview";
 import { is3DRequest } from "@/lib/threeD";
 import { babylonGuide } from "@/lib/babylon3D";
+import { isCinematicRequest, cinematicGuide } from "@/lib/cinematic";
 import { describeForAgent, fromRow, type DesignSystem } from "@/lib/designSystems";
 import { describeImage } from "@/lib/tools/vision";
 import { listFiles, readFile } from "@/lib/projectData";
@@ -208,7 +209,7 @@ async function saveDesignSystem(db: SupabaseClient, projectId: string, settings:
   return fromRow(data);
 }
 
-function systemPrompt(opts: { templateBrief: string; designSystem: string; codebase: string | null; research: boolean; researchSources: number; threeD: boolean }) {
+function systemPrompt(opts: { templateBrief: string; designSystem: string; codebase: string | null; research: boolean; researchSources: number; threeD: boolean; cinematic: boolean }) {
   return `You are the design agent in Vellum, a design tool where people describe what they want and you make it on a live canvas. You work like a senior product designer who writes production-quality HTML, CSS and JavaScript.
 
 ## Files
@@ -242,7 +243,7 @@ function systemPrompt(opts: { templateBrief: string; designSystem: string; codeb
 Expose 2–5 meaningful live controls when they'd help the user explore (accent color, density, speed, which screen to show, a layout variant). Declare them in the file as:
 <script type="application/json" id="tweaks">[{"name":"accent","label":"Accent","type":"color","value":"#d9774f"},{"name":"speed","type":"range","min":200,"max":2000,"step":50,"value":700,"unit":"ms"},{"name":"startScreen","type":"select","options":["home","detail"],"value":"home"},{"name":"grid","type":"toggle","value":false}]</script>
 The canvas applies every value as a CSS custom property on :root (--accent, --speed with its unit, --grid as 1/0), as an attribute on <html> (data-start-screen="detail"; camelCase names become kebab-case), and fires window.addEventListener("tweak", e => e.detail.name / e.detail.value) on load and on every change. Use var(--name) in CSS or the event in JS.
-${opts.threeD ? `\n${babylonGuide()}\n` : ""}${opts.research ? `\n## Research\nSearch with targeted queries, web_fetch the best sources, then write; stop searching once you can answer at the depth the user chose. Cite every factual sentence as [S3] or [S3, S5] using only IDs you were given; a numbered sources list is added automatically. Never write URLs as citations. This turn's research allowance is ${opts.researchSources} searches and fetches.\n` : "\n## Facts\nDraft first. Write the design straight away from what you know; use web_search / web_fetch only for a specific real-world fact you'd otherwise get wrong, and cite it as [S3]. Most design work needs no search at all, and each turn allows at most 6 searches and fetches.\n"}
+${opts.threeD ? `\n${babylonGuide()}\n` : ""}${opts.cinematic ? `\n${cinematicGuide()}\n` : ""}${opts.research ? `\n## Research\nSearch with targeted queries, web_fetch the best sources, then write; stop searching once you can answer at the depth the user chose. Cite every factual sentence as [S3] or [S3, S5] using only IDs you were given; a numbered sources list is added automatically. Never write URLs as citations. This turn's research allowance is ${opts.researchSources} searches and fetches.\n` : "\n## Facts\nDraft first. Write the design straight away from what you know; use web_search / web_fetch only for a specific real-world fact you'd otherwise get wrong, and cite it as [S3]. Most design work needs no search at all, and each turn allows at most 6 searches and fetches.\n"}
 ## This project
 Starting template: ${opts.templateBrief}
 ${opts.designSystem || "No design system selected. Choose a fitting visual direction yourself."}
@@ -535,6 +536,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             research: template.id === "research",
             researchSources: sources.turnLimit,
             threeD: is3DRequest(template.id, String(newest?.content ?? project.goal ?? "")),
+            cinematic: isCinematicRequest(String(newest?.content ?? project.goal ?? "")),
           }) + (summary ? `\n\n## Earlier in this conversation (summarized)\n${summary}` : ""),
       },
     ];
