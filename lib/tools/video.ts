@@ -10,7 +10,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { BUCKET } from "./files";
 import { launchBrowser } from "./browser";
 
-const COSMOS_URL = "https://ai.api.nvidia.com/v1/cosmos/nvidia/cosmos3-nano";
+// cosmos3-nano is a preview model: its documented ai.api.nvidia.com route 404s, so it's invoked through NVIDIA Cloud
+// Functions by the function id its build.nvidia.com page carries (nvcfFunctionId), with the same key.
+const COSMOS_FUNCTION_ID = process.env.COSMOS_FUNCTION_ID ?? "d09cd49d-d7f2-4361-928f-ea22af707249";
+const COSMOS_URL = `https://api.nvcf.nvidia.com/v2/nvcf/pexec/functions/${COSMOS_FUNCTION_ID}`;
 const NVCF_STATUS = "https://api.nvcf.nvidia.com/v2/nvcf/pexec/status";
 const FPS = 24;
 
@@ -20,8 +23,9 @@ export type VideoResult = { url: string; first_frame_url: string; last_frame_url
 async function callCosmos(body: Record<string, unknown>, deadline: number, signal?: AbortSignal): Promise<Buffer> {
   const key = process.env.NVIDIA_API_KEY;
   if (!key) throw new Error("video generation needs NVIDIA_API_KEY, which isn't set on this deployment");
-  const headers = { Authorization: `Bearer ${key}`, Accept: "application/json", "Content-Type": "application/json" };
   const left = () => Math.max(1000, deadline - Date.now());
+  // NVCF holds the request open up to this long before answering 202 with an id to poll.
+  const headers = { Authorization: `Bearer ${key}`, Accept: "application/json", "Content-Type": "application/json", "NVCF-POLL-SECONDS": String(Math.min(240, Math.floor(left() / 1000) - 5)) };
   const until = () => (signal ? AbortSignal.any([signal, AbortSignal.timeout(left())]) : AbortSignal.timeout(left()));
   let res = await fetch(COSMOS_URL, { method: "POST", headers, body: JSON.stringify(body), signal: until() });
   while (res.status === 202) {
