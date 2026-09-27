@@ -152,7 +152,7 @@ function automatedFindings(c: CheckResult): string[] {
     out.push(`Printed, ${p.loose.count} part${p.loose.count > 1 ? "s sit" : " sits"} between the page sheets instead of inside one, so ${p.loose.count > 1 ? "they print" : "it prints"} without the page design (no margins, background or running header): ${eg(p.loose)}. Wrap each in its own page sheet, like the pages around it.`);
   if (p?.flush)
     out.push(`Printed, ${p.flush.count} sheet${p.flush.count > 1 ? "s run" : " runs"} onto more than one page, and with @page margin 0 the continued part prints flush against the paper edge with no margin. Put the page margins in the @page rule (and drop the sheet's own padding in print), or end each sheet before the page does.`);
-  if (p?.target && (p.pages < p.target[0] || p.pages > p.target[1])) {
+  if (p?.target && p.pages != null && (p.pages < p.target[0] || p.pages > p.target[1])) {
     const want = p.target[0] === p.target[1] ? `exactly ${p.target[0]} page${p.target[0] > 1 ? "s" : ""}` : `${p.target[0]} to ${p.target[1]} pages`;
     if (p.selfDeclared && p.pages > p.target[1] * 1.25)
       out.push(

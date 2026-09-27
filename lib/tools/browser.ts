@@ -37,6 +37,7 @@ async function processesOf(executable: string): Promise<number[]> {
  */
 async function reapLeftovers(executable: string) {
   if (openBrowsers > 0) return;
+  await clearProfiles();
   const stray = await processesOf(executable);
   if (!stray.length) return;
   for (const id of stray) {
@@ -46,6 +47,31 @@ async function reapLeftovers(executable: string) {
   }
   for (let i = 0; i < 20 && (await processesOf(executable)).length; i++) await new Promise((r) => setTimeout(r, 100));
   console.log(`[browser] killed ${stray.length} leftover browser process${stray.length > 1 ? "es" : ""}`);
+}
+
+/**
+ * Each launch makes a profile folder in /tmp that a crashed or killed browser never removes. The serverless /tmp is
+ * small (512 MB, with the browser itself unpacked there), and once it fills, printing a PDF fails and then pages
+ * crash as they load. With no browser open, none of them is in use.
+ */
+async function clearProfiles() {
+  const fs = await import("node:fs/promises");
+  const os = await import("node:os");
+  const dir = os.tmpdir();
+  const names = (await fs.readdir(dir).catch(() => [] as string[])).filter((n) => /^playwright(_chromiumdev_profile|-artifacts)-/.test(n));
+  await Promise.all(names.map((n) => fs.rm(`${dir}/${n}`, { recursive: true, force: true }).catch(() => {})));
+}
+
+/** Free space in the temp folder, in MB, for the check's log line. */
+export async function tmpFreeMb(): Promise<number | null> {
+  try {
+    const fs = await import("node:fs/promises");
+    const os = await import("node:os");
+    const st = await fs.statfs(os.tmpdir());
+    return Math.round((st.bavail * st.bsize) / 1048576);
+  } catch {
+    return null;
+  }
 }
 
 /** Counts the browser as open until it has closed, and makes close() wait until its process is really gone. */
@@ -77,7 +103,9 @@ export async function launchBrowser(): Promise<Browser> {
     // Counted from before the launch, so a check starting alongside never mistakes this one for a leftover.
     openBrowsers++;
     try {
-      return tracked(await chromium.launch({ executablePath, args: [...sparticuz.args, ...WEBGL_ARGS], headless: true }), executablePath);
+      // A small disk cache (the default allows 32 MB per launch) keeps /tmp free for the browser's own work.
+      const args = [...sparticuz.args.filter((a) => !a.startsWith("--disk-cache-size")), "--disk-cache-size=4194304", ...WEBGL_ARGS];
+      return tracked(await chromium.launch({ executablePath, args, headless: true }), executablePath);
     } catch (e) {
       openBrowsers--;
       throw e;

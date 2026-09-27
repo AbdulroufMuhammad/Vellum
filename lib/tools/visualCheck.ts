@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { chat, type ContentPart, type ModelKey } from "@/lib/gateway";
 import { BUCKET } from "@/lib/tools/files";
 import type { Page } from "playwright-core";
-import { launchBrowser, openDesign } from "@/lib/tools/browser";
+import { launchBrowser, openDesign, tmpFreeMb } from "@/lib/tools/browser";
 
 const WIDTH = 1280;
 const TILE = 1100;
@@ -19,7 +19,8 @@ export type Automated = {
   height: number;
   /** For printable designs (an @page rule): how many pages it prints to, and how many it should. */
   print?: {
-    pages: number;
+    /** Null when the PDF couldn't be printed on the server, so the page count is unknown this time. */
+    pages: number | null;
     target: [number, number] | null;
     /** Sheets whose overflow is hidden, so part of them never prints, and about how many pages that hides. */
     cut?: { count: number; examples: string[]; hiddenPages: number };
@@ -426,11 +427,15 @@ const INSPECT_PRINT = String.raw`((pageH) => {
   // Content sitting between the sheets (a section whose page wrapper went missing) prints without the page design.
   const loose = [];
   if (sheetEls.length >= 2) {
+    // A sheet is known by its page break, or by looking like the others (same tag and first class): with
+    // ".page + .page { break-before: page }" the first sheet, and one after a non-sheet, carry no break of their own.
+    const sig = (el) => el.tagName + "." + (el.classList[0] || "");
+    const kinds = new Set(sheetEls.map(sig).filter((k) => !k.endsWith(".")));
     const parents = new Set(sheetEls.map((el) => el.parentElement).filter(Boolean));
     for (const parent of parents) {
       let run = null;
       for (const child of Array.from(parent.children)) {
-        const isSheet = sheetEls.includes(child) || sheetEls.some((el) => child.contains(el));
+        const isSheet = sheetEls.includes(child) || kinds.has(sig(child)) || sheetEls.some((el) => child.contains(el));
         const shows = !/^(SCRIPT|STYLE|TEMPLATE|LINK|META|NOSCRIPT)$/.test(child.tagName) && getComputedStyle(child).display !== "none" && words(child).length > 1;
         if (isSheet) { run = null; continue; }
         if (!shows) continue;
@@ -549,6 +554,8 @@ function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> 
 function crashMessage(html: string, when: string) {
   if (/three\.js|babylon/i.test(html))
     return `the page's renderer crashed ${when}, most likely because the scene is too heavy for the browser to hold at once (a very high triangle count, or many chained CSG boolean cuts computed one at a time instead of batched). Simplify the scene or batch repeated cuts into one operation, then try again.`;
+  if (isPrintable(html) || html.length > 150_000)
+    return `the checking browser ran out of resources ${when} on this long document. That's a limit of the server-side checker, not a sign the file is broken: don't rewrite or shrink the file because of it. Make any other fixes you know are needed, then reply and say the final check couldn't run.`;
   if (/<video\b|mountScrollWorld|\.(mp4|webm|mov)\b/i.test(html))
     return `the checking browser ran out of memory ${when} while decoding the page's video clips. That's a limit of the server-side checker, not a problem with the page: if the last check before this one passed, reply and finish instead of changing anything.`;
   return `the page's renderer crashed ${when}, most likely because the page is too heavy for the browser to hold at once (very large images, huge inline data or an endless loop). Lighten it, then try again.`;
@@ -574,7 +581,7 @@ async function render(html: string, printTarget: [number, number] | null): Promi
   const laps: string[] = [];
   const lap = (step: string) => laps.push(`${step} ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   let browser = await launchBrowser();
-  lap("launch");
+  lap(`launch (tmp ${await tmpFreeMb()} MB free)`);
   const tiles: Buffer[] = [];
   const printTiles: Buffer[] = [];
   const views: Buffer[] = [];
@@ -663,8 +670,12 @@ async function render(html: string, printTarget: [number, number] | null): Promi
     let print: Automated["print"];
     if (printable) {
       await page.setViewportSize({ width: WIDTH, height: 800 });
-      const pdf = await page.pdf({ preferCSSPageSize: true, printBackground: true, format: "Letter" });
-      print = { pages: countPdfPages(pdf), target: printTarget ?? declaredPages(html), selfDeclared: !printTarget && !!declaredPages(html) };
+      // The PDF is only for the page count: if the server's browser can't print it, the rest of the check still runs.
+      const pdf = await page.pdf({ preferCSSPageSize: true, printBackground: true, format: "Letter" }).catch((e: Error) => {
+        laps.push(`pdf failed: ${e.message.split("\n")[0].slice(0, 120)}`);
+        return null;
+      });
+      print = { pages: pdf ? countPdfPages(pdf) : null, target: printTarget ?? declaredPages(html), selfDeclared: !printTarget && !!declaredPages(html) };
       lap("pdf");
       const area = printArea(html);
       await page.emulateMedia({ media: "print" });
@@ -752,7 +763,7 @@ export async function checkDesign(
       ? [
           {
             type: "text" as const,
-            text: `The next ${printTiles.length === 1 ? "image is" : `${printTiles.length} images are`} the same design as printed on paper${automated.print ? ` (it prints to ${automated.print.pages} page${automated.print.pages === 1 ? "" : "s"})` : ""}: its first page${printTiles.length > 1 ? ", then the places where the automatic check found a printing problem" : ""}. Check the printed layout too: it should keep the designed layout (columns, sidebar), with nothing cut off, clipped, squashed, overlapping or pushed onto an extra page.`,
+            text: `The next ${printTiles.length === 1 ? "image is" : `${printTiles.length} images are`} the same design as printed on paper${automated.print?.pages ? ` (it prints to ${automated.print.pages} page${automated.print.pages === 1 ? "" : "s"})` : ""}: its first page${printTiles.length > 1 ? ", then the places where the automatic check found a printing problem" : ""}. Check the printed layout too: it should keep the designed layout (columns, sidebar), with nothing cut off, clipped, squashed, overlapping or pushed onto an extra page.`,
           },
           ...printTiles.map((t) => ({ type: "image_url" as const, image_url: { url: `data:image/jpeg;base64,${t.toString("base64")}` } })),
         ]
