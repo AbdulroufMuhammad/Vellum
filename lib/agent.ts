@@ -438,6 +438,8 @@ export type TurnOptions = {
   activeFile?: string | null;
   /** Set by the turn route when it claims the project; this turn stops as soon as the project's run_id changes. */
   runId?: string;
+  /** The GitHub token this session may use to read the codebase: only main-key sessions get one. */
+  githubToken?: string | null;
 };
 
 export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnOptions = {}) {
@@ -517,7 +519,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
         await db.from("projects").update({ settings }).eq("id", projectId);
       },
     });
-    const repo = project.codebase ? makeRepoTools(project.codebase) : null;
+    const repo = project.codebase ? makeRepoTools(project.codebase, opts.githubToken ?? null) : null;
     // A new design (or a big request) is split into plan, build and check, each its own invocation.
     const newest = (history ?? []).find((m) => m.role === "user");
     const big = files.length === 0 || template.id === "research" || String(newest?.content ?? "").length > 280;

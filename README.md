@@ -44,7 +44,22 @@ read-only file, render and export endpoints they use).
   the rest of it could still be used for. The enabled subset is saved to the
   `app_settings` table (`lib/modelSettings.ts`) and read by both Home and the
   project page; a project already using a model that's since been disabled
-  keeps it selectable.
+  keeps it selectable. `/api/access/model-test?model=kimi` (main key only)
+  sends one tiny prompt and returns the raw reply, with optional
+  `temperature` / `top_p` overrides, to diagnose a model without exposing
+  the key. When a model rejects a sampling value ("`top_p` is immutable for
+  this model and must be 0.95"), the gateway retries with the required value
+  and remembers it.
+- **GitHub** (avatar menu → GitHub, `/access/github`, main key only): connect
+  a GitHub account with a fine-grained token (Contents: read-only) so the
+  codebase picker lists your repositories, private ones included, and the
+  agent can read them. The token is checked with GitHub, then stored
+  encrypted (AES-256-GCM, key from `GITHUB_TOKEN_SECRET` or else the
+  Supabase service-role key) in `app_settings.github`, and never sent back to
+  a browser (`lib/githubAccount.ts`). Only main-key sessions ever use it, for
+  the picker and for the agent's own turns; temporary keys see public
+  repositories only, even on a project that has a private one attached. A
+  `GITHUB_TOKEN` environment variable follows the same main-only rule.
 
 ## How it works
 
@@ -223,7 +238,9 @@ read-only file, render and export endpoints they use).
 ```bash
 cp .env.example .env.local
 # fill in SUPABASE_SERVICE_ROLE_KEY, NVIDIA_API_KEY / DEEPSEEK_API_KEY,
-# TAVILY_API_KEY, and optionally GITHUB_TOKEN / GITHUB_OWNER
+# TAVILY_API_KEY, and optionally GITHUB_OWNER (public repos for the picker),
+# GITHUB_TOKEN (main key only) and GITHUB_TOKEN_SECRET (encrypts the connected
+# GitHub account's token; defaults to one derived from the service-role key)
 npm install
 npm run dev
 ```

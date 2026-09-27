@@ -239,13 +239,15 @@ export function ModelPicker({
 }
 
 type Repo = { full_name: string; description: string | null; private: boolean };
-let repoCache: Promise<{ repos: Repo[]; error?: string }> | null = null;
+let repoCache: Promise<{ repos: Repo[]; error?: string; main?: boolean; connected?: string | null }> | null = null;
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
 
 export function CodebasePicker({ value, onChange }: { value: string | null; onChange: (repo: string | null) => void }) {
   const [q, setQ] = useState("");
   const [repos, setRepos] = useState<Repo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The main key without a connected account gets a link to connect one; nobody else is offered it.
+  const [canConnect, setCanConnect] = useState(false);
 
   function load() {
     repoCache ??= fetch("/api/repos")
@@ -254,6 +256,7 @@ export function CodebasePicker({ value, onChange }: { value: string | null; onCh
     repoCache.then((d) => {
       setRepos(d.repos ?? []);
       setError(d.error ?? null);
+      setCanConnect(!!d.main && !d.connected);
     });
   }
 
@@ -296,6 +299,13 @@ export function CodebasePicker({ value, onChange }: { value: string | null; onCh
             </button>
             <div className="pop-sep" />
             <div className="pop-label">Codebase from GitHub</div>
+            {canConnect && (
+              <a className="menu-item" href="/access/github">
+                <span className="menu-item-label">
+                  <IconGithub size={14} /> Connect GitHub for your private repositories
+                </span>
+              </a>
+            )}
             <div className="repo-scroll">
               {custom && (
                 <button type="button" className="menu-item" onClick={() => choose(query)}>

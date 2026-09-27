@@ -4,6 +4,8 @@ import { runTurn } from "@/lib/agent";
 import { sseResponse } from "@/lib/sse";
 import { effectiveStatus } from "@/lib/projectData";
 import { cleanAttachments } from "@/lib/attachments";
+import { currentSession } from "@/lib/accessServer";
+import { githubTokenFor } from "@/lib/githubAccount";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -63,9 +65,11 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   }
   const activeFile = typeof body?.activeFile === "string" ? body.activeFile : null;
   const clientId = typeof body?.clientId === "string" ? body.clientId : null;
+  // A connected GitHub account (private repositories) is only ever used for the main key's own turns.
+  const githubToken = project.codebase ? await githubTokenFor(admin, await currentSession()).catch(() => null) : null;
 
   return sseResponse(req, async (send, signal) => {
     if (stored) send({ type: "message", payload: { message: stored, replaces: clientId } });
-    await runTurn(admin, params.id, { onEvent: send, signal, resume, activeFile, runId });
+    await runTurn(admin, params.id, { onEvent: send, signal, resume, activeFile, runId, githubToken });
   });
 }

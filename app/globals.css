@@ -507,6 +507,14 @@ button.avatar { cursor: pointer; }
 .models-row:first-child { border-top: 0; }
 .models-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
 .models-name { font-weight: 500; }
+.gh-account { display: flex; align-items: center; gap: 12px; padding: 14px; border-radius: 12px; border: 1px solid var(--line-2); background: var(--panel); font-size: 13.5px; max-width: 680px; }
+.gh-account img { border-radius: 50%; flex: none; }
+.gh-account > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.gh-login { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gh-connect { display: flex; flex-direction: column; gap: 12px; padding: 14px; border-radius: 12px; border: 1px solid var(--line-2); background: var(--panel); font-size: 13.5px; max-width: 680px; }
+.gh-steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; line-height: 1.5; }
+.gh-steps a { color: var(--accent); }
+.gh-token { flex: 1 1 260px; min-width: 0; height: 34px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--bg); color: var(--text); font: 13.5px var(--font-mono); }
 @media (max-width: 560px) {
   .models-row { grid-template-columns: 20px 1fr; }
   .models-row .muted { grid-column: 2; }
