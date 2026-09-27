@@ -527,7 +527,12 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     // Every new request (not a small edit, a comment on an element, or the answers themselves) starts with a form:
     // how deep to go, what type or style, and whatever else the request leaves open. The user can skip it.
     const optedOut = /\b(don'?t|do not|no need to) ask|no questions|skip (the )?questions|just (build|make|do) it\b/i.test(String(newest?.content ?? ""));
-    const mustAsk = !opts.resume && big && !isEdit && !newest?.meta?.answers && !optedOut && template.id !== "research";
+    // A short nudge ("continue", "go on", "build it") after an answered form carries on with those answers rather than
+    // asking the same questions again: it was asking twice when a build failed and the user said "Continue".
+    const userMsgs = (history ?? []).filter((m) => m.role === "user");
+    const answeredEarlier = userMsgs.slice(1).some((m) => m.meta?.answers);
+    const nudge = String(newest?.content ?? "").trim().length < 120 && answeredEarlier;
+    const mustAsk = !opts.resume && big && !isEdit && !newest?.meta?.answers && !optedOut && !nudge && template.id !== "research";
     if (!opts.resume) {
       delete settings.plan;
       delete settings.buildReply;

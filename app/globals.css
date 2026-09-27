@@ -374,6 +374,29 @@ code { font-family: var(--font-mono); font-size: 0.9em; background: var(--surfac
 .pulse { width: 14px; height: 14px; border-radius: 50%; background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { transform: scale(0.7); opacity: 0.5; } 50% { transform: scale(1.15); opacity: 1; } }
 .stage-badge { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); padding: 6px 12px; border-radius: 99px; background: rgba(27, 26, 24, 0.92); border: 1px solid var(--line-2); color: var(--text-2); font-size: 12.5px; box-shadow: var(--shadow); pointer-events: none; }
+
+/* ---------- workspace: mobile ----------
+   Chat and canvas sit side by side on a wide screen; below the breakpoint each takes the
+   full screen instead, switched with the existing show/hide-chat button, so the phone always
+   gets one full-width, usable panel instead of two squeezed ones. */
+@media (max-width: 860px) {
+  .workspace { padding: 0; gap: 0; }
+  .workspace.chat-closed { padding: 0; }
+  .chat { width: 100%; flex: 1 1 auto; }
+  .workspace:has(.chat) .stage-col { display: none; }
+  .stage-col { border-radius: 0; }
+  .stage-card { border-radius: 0; border-left: 0; border-right: 0; }
+  /* Everything on the toolbar keeps its full label; a tap-scroll reaches whatever doesn't fit
+     rather than clipping or wrapping controls on top of each other. */
+  .stage-bar { overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .stage-bar::-webkit-scrollbar { display: none; }
+  .bar-left, .bar-right { flex: none; }
+  .bar-left > *, .bar-right > * { flex: none; white-space: nowrap; }
+  .file-title { min-width: 140px; }
+  .fb-bar { overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .fb-bar::-webkit-scrollbar { display: none; }
+  .fb-bar > * { flex: none; white-space: nowrap; }
+}
 .present-bar { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 30; display: flex; align-items: center; gap: 4px; padding: 5px; border-radius: 12px; background: rgba(20, 20, 19, 0.82); border: 1px solid rgba(255, 255, 255, 0.12); backdrop-filter: blur(8px); color: #f1efe8; font-size: 13px; opacity: 0.35; transition: opacity 0.2s; }
 .present-bar:hover { opacity: 1; }
 .present-bar span { min-width: 64px; text-align: center; font-variant-numeric: tabular-nums; }
