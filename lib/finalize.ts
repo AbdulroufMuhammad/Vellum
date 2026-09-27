@@ -278,6 +278,18 @@ function ensureMathRenderer(root: HTMLElement, html: string) {
   );
 }
 
+const FUNCTION_PLOT = "https://cdn.jsdelivr.net/npm/function-plot@1.25.1/dist/function-plot.js";
+// Draws every <div data-plot='{ function-plot options }'>: exact curves computed from the function, not hand-drawn paths.
+// Zoom is off by default so scrolling a document over a graph doesn't hijack the wheel.
+const PLOT_MOUNT = `addEventListener("DOMContentLoaded",function(){var fp=window.functionPlot;if(!fp)return;document.querySelectorAll("[data-plot]").forEach(function(el){try{var o=JSON.parse(el.getAttribute("data-plot"));var w=el.clientWidth||620;o.target=el;o.width=o.width||w;o.height=o.height||Math.round(w*0.55);if(o.disableZoom===undefined)o.disableZoom=true;if(o.grid===undefined)o.grid=true;el.innerHTML="";fp(o);}catch(e){var m=String(e&&e.message||e);el.setAttribute("data-plot-error",m);console.error("data-plot graph failed to draw: "+m);}});});`;
+
+/** Pages with data-plot graphs get function-plot and the mount script in <head>, whatever part of the file the model reached. */
+function ensurePlotRenderer(root: HTMLElement, html: string) {
+  const body = root.querySelector("body");
+  if (!body || html.includes("function-plot") || !/\bdata-plot\s*=/.test(body.innerHTML)) return;
+  root.querySelector("head")!.insertAdjacentHTML("beforeend", `<script defer src="${FUNCTION_PLOT}"></script><script>${PLOT_MOUNT}</script>`);
+}
+
 export function unfinishedDocument(html: string) {
   const open = (tag: string) => (html.match(new RegExp(`<${tag}\\b`, "gi")) ?? []).length - (html.match(new RegExp(`</${tag}\\s*>`, "gi")) ?? []).length;
   return open("script") > 0 || open("style") > 0;
@@ -292,6 +304,7 @@ export function finalizeArtifact(html: string, sources: Map<string, Source>): st
     head.insertAdjacentHTML("beforeend", `<meta name="viewport" content="width=device-width, initial-scale=1">`);
   citations(root, sources);
   ensureMathRenderer(root, html);
+  ensurePlotRenderer(root, html);
   cleanCopy(root);
   fixSvgTransforms(root);
   printLayout(root);

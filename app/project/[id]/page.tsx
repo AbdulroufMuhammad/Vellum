@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { loadProjectData } from "@/lib/projectData";
-import { fromRow } from "@/lib/designSystems";
+import { listDesignSystems } from "@/lib/designSystemsServer";
 import { MODELS } from "@/lib/gateway";
 import { getModelOptions } from "@/lib/modelSettings";
 import ProjectView from "@/components/project/ProjectView";
@@ -15,14 +15,10 @@ export default async function ProjectPage({ params }: { params: { id: string } }
   const { data: project } = await admin.from("projects").select("*").eq("id", params.id).single();
   if (!project) notFound();
 
-  const [data, { data: dsRows }, modelOptions] = await Promise.all([
-    loadProjectData(admin, project),
-    admin.from("design_systems").select("*").order("owner_id", { ascending: true, nullsFirst: true }).order("created_at", { ascending: true }),
-    getModelOptions(admin),
-  ]);
+  const [data, systems, modelOptions] = await Promise.all([loadProjectData(admin, project), listDesignSystems(admin), getModelOptions(admin)]);
   // The project's current model stays selectable even if it's since been disabled in settings.
   const models = modelOptions.some((m) => m.key === data.project.model)
     ? modelOptions
     : [{ key: data.project.model, label: MODELS[data.project.model].label, note: MODELS[data.project.model].note }, ...modelOptions];
-  return <ProjectView initial={data} systems={(dsRows ?? []).map(fromRow)} models={models} />;
+  return <ProjectView initial={data} systems={systems} models={models} />;
 }

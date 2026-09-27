@@ -121,6 +121,15 @@ read-only file, render and export endpoints they use).
   it from the front, side and three-quarter view for the reviewer. A renderer
   crash mid-check (an overloaded scene) is reported to the agent as a plain
   diagnosis instead of a raw browser error, so it knows to simplify or batch.
+- **Math and graphs** (`lib/finalize.ts`) — any file with LaTeX (`\\( \\)`,
+  `\\[ \\]`, `$$`) but no renderer gets KaTeX + auto-render injected into
+  `<head>` on every write, and any `<div data-plot='{…}'>` gets function-plot
+  plus a mount script, so math and graphs render even when a long document's
+  final part (where scripts would go) is never written. Graphs are computed
+  from the function (exact curves, tangents, shaded areas), never hand-drawn.
+- **Starter design systems** (`lib/designSystemsServer.ts`) — Nocturne,
+  Organic, Modernist and Classical are restored automatically whenever they're
+  missing from `design_systems` (e.g. after the table is cleared).
 - **One script per page** — if a page built in parts ends up with its code in
   several `<script type="module">` blocks and a later one uses an earlier
   one's variables, writes merge them into one module (each import kept once);

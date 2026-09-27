@@ -1,5 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
-import { fromRow } from "@/lib/designSystems";
+import { listDesignSystems } from "@/lib/designSystemsServer";
 import { getModelOptions } from "@/lib/modelSettings";
 import HomeClient from "@/components/home/HomeClient";
 
@@ -10,13 +10,9 @@ export const fetchCache = "force-no-store";
 
 export default async function HomePage({ searchParams }: { searchParams: { ds?: string } }) {
   const admin = createAdminClient();
-  const [{ data: projects }, { data: dsRows }, models] = await Promise.all([
+  const [{ data: projects }, systems, models] = await Promise.all([
     admin.from("projects").select("id, title, template, status, updated_at").order("updated_at", { ascending: false }).limit(60),
-    admin
-      .from("design_systems")
-      .select("*")
-      .order("owner_id", { ascending: true, nullsFirst: true })
-      .order("created_at", { ascending: true }),
+    listDesignSystems(admin),
     getModelOptions(admin),
   ]);
 
@@ -35,7 +31,7 @@ export default async function HomePage({ searchParams }: { searchParams: { ds?: 
 
   return (
     <HomeClient
-      systems={(dsRows ?? []).map(fromRow)}
+      systems={systems}
       models={models}
       initialDs={searchParams.ds ?? null}
       projects={(projects ?? []).map((p) => ({

@@ -1,16 +1,14 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { fromRow } from "@/lib/designSystems";
+import { listDesignSystems } from "@/lib/designSystemsServer";
 
 export async function GET() {
-  const admin = createAdminClient();
   // Seeded (owner_id null) systems first, each group oldest-first so newly created ones land at the end.
-  const { data, error } = await admin
-    .from("design_systems")
-    .select("*")
-    .order("owner_id", { ascending: true, nullsFirst: true })
-    .order("created_at", { ascending: true });
-  if (error) return Response.json({ error: error.message }, { status: 500 });
-  return Response.json({ systems: (data ?? []).map(fromRow) });
+  try {
+    return Response.json({ systems: await listDesignSystems(createAdminClient()) });
+  } catch (e) {
+    return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
+  }
 }
 
 const HEX = /^#[0-9a-f]{6}$/i;

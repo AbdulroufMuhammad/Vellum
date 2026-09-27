@@ -1,5 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
-import { fromRow } from "@/lib/designSystems";
+import { listDesignSystems } from "@/lib/designSystemsServer";
 import DesignSystemsClient from "@/components/DesignSystemsClient";
 import AppHeader from "@/components/ui/AppHeader";
 
@@ -9,17 +9,13 @@ export const fetchCache = "force-no-store";
 
 export default async function DesignSystemsPage({ searchParams }: { searchParams: { new?: string } }) {
   const admin = createAdminClient();
-  const { data: dsRows } = await admin
-    .from("design_systems")
-    .select("*")
-    .order("owner_id", { ascending: true, nullsFirst: true })
-    .order("created_at", { ascending: true });
+  const systems = await listDesignSystems(admin);
 
   return (
     <div className="home">
       <AppHeader />
       <main className="ds-main">
-        <DesignSystemsClient initialSystems={(dsRows ?? []).map(fromRow)} startNew={searchParams.new === "1"} />
+        <DesignSystemsClient initialSystems={systems} startNew={searchParams.new === "1"} />
       </main>
     </div>
   );
