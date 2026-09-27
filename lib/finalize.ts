@@ -1,5 +1,8 @@
 import { parse, HTMLElement } from "node-html-parser";
 import type { Source } from "@/lib/tools/tavily";
+import { escapeMathAngles } from "@/lib/mathText";
+
+export { escapeMathAngles };
 
 const PARSE = { comment: true, blockTextElements: { script: true, style: true, noscript: true, pre: true, textarea: true } };
 
@@ -290,6 +293,21 @@ function ensurePlotRenderer(root: HTMLElement, html: string) {
   root.querySelector("head")!.insertAdjacentHTML("beforeend", `<script defer src="${FUNCTION_PLOT}"></script><script>${PLOT_MOUNT}</script>`);
 }
 
+/**
+ * For showing or exporting a stored file: the same math and graph fixes finalizeArtifact applies on write, so files
+ * written before those fixes (or whose last part never arrived) still render. Nothing else about the file changes.
+ */
+export function prepareForDisplay(html: string) {
+  const esc = escapeMathAngles(html);
+  if (!LATEX.test(esc) && !/\bdata-plot\s*=/.test(esc)) return esc;
+  if (MATH_RENDERER.test(esc) && (esc.includes("function-plot") || !/\bdata-plot\s*=/.test(esc))) return esc;
+  const root = ensureDocument(esc);
+  ensureMathRenderer(root, esc);
+  ensurePlotRenderer(root, esc);
+  const out = root.toString();
+  return /^\s*<!doctype/i.test(out) ? out : `<!doctype html>\n${out}`;
+}
+
 export function unfinishedDocument(html: string) {
   const open = (tag: string) => (html.match(new RegExp(`<${tag}\\b`, "gi")) ?? []).length - (html.match(new RegExp(`</${tag}\\s*>`, "gi")) ?? []).length;
   return open("script") > 0 || open("style") > 0;
@@ -297,7 +315,7 @@ export function unfinishedDocument(html: string) {
 
 export function finalizeArtifact(html: string, sources: Map<string, Source>): string {
   if (unfinishedDocument(html)) return html;
-  const root = ensureDocument(joinModuleScripts(html));
+  const root = ensureDocument(joinModuleScripts(escapeMathAngles(html)));
   const head = root.querySelector("head")!;
   if (!head.querySelector("meta[charset]")) head.insertAdjacentHTML("afterbegin", `<meta charset="utf-8">`);
   if (!head.querySelector("meta[name=viewport]"))

@@ -2,6 +2,7 @@
 
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from "react";
 import { buildSrcDoc, DRAFT_SHELL, type BridgeOut, type CanvasMode } from "@/lib/canvasBridge";
+import { escapeMathAngles } from "@/lib/mathText";
 
 export type CanvasHandle = { post: (msg: Record<string, unknown>) => void; frame: () => HTMLIFrameElement | null };
 
@@ -34,7 +35,7 @@ const Canvas = forwardRef<CanvasHandle, Props>(function Canvas({ html, docKey, d
   onMessageRef.current = onMessage;
 
   const drafting = draft != null;
-  const srcDoc = useMemo(() => (drafting ? DRAFT_SHELL : html != null ? buildSrcDoc(html) : null), [drafting, html, docKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const srcDoc = useMemo(() => (drafting ? DRAFT_SHELL : html != null ? buildSrcDoc(escapeMathAngles(html)) : null), [drafting, html, docKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const post = (msg: Record<string, unknown>) => frame.current?.contentWindow?.postMessage({ ...msg, __ds: 1 }, "*");
   useImperativeHandle(ref, () => ({ post, frame: () => frame.current }));
@@ -64,7 +65,7 @@ const Canvas = forwardRef<CanvasHandle, Props>(function Canvas({ html, docKey, d
 
   function flushDraft() {
     if (!ready.current || pendingDraft.current == null) return;
-    post({ t: "draft", html: pendingDraft.current });
+    post({ t: "draft", html: escapeMathAngles(pendingDraft.current) });
     pendingDraft.current = null;
     lastDraftPost.current = Date.now();
   }

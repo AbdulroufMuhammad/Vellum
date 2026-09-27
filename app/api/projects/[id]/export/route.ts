@@ -2,6 +2,7 @@ import { getProject, notFoundResponse } from "@/lib/access";
 import { readFile } from "@/lib/projectData";
 import { launchBrowser, openDesign } from "@/lib/tools/browser";
 import { buildPptx } from "@/lib/pptxExport";
+import { prepareForDisplay } from "@/lib/finalize";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -24,6 +25,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   const format = sp.get("format") ?? "html";
   const file = await readFile(res.admin, params.id, sp.get("path") ?? "");
   if (!file) return Response.json({ error: "file not found" }, { status: 404 });
+  file.content = prepareForDisplay(file.content);
 
   if (format === "html") {
     return new Response(file.content, {

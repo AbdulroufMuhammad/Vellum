@@ -253,9 +253,51 @@ const BRIDGE = String.raw`(function(){
       document.body.setAttribute("style", doc.body.getAttribute("style") || "");
       document.body.className = doc.body.className;
       mount();
+      typesetDraft();
       post({ t: "height", h: document.documentElement.scrollHeight });
     }
   });
+
+  // Streamed drafts replace the DOM without running the page's scripts, so math and graphs would stay raw until
+  // the finished file loads. Typeset them here: KaTeX and function-plot load once, re-render at most every 1.2s.
+  var KATEX = "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/";
+  var FPLOT = "https://cdn.jsdelivr.net/npm/function-plot@1.25.1/dist/function-plot.js";
+  var tsBusy = false, tsLast = 0, tsTimer = null, tsLoading = {};
+  function need(src, ready, cb){
+    if (ready()) return cb();
+    if (tsLoading[src]) return;
+    tsLoading[src] = true;
+    var sc = document.createElement("script"); sc.src = src;
+    sc.onload = function(){ tsLoading[src] = false; cb(); };
+    document.head.appendChild(sc);
+  }
+  function typesetNow(){
+    tsLast = Date.now();
+    var body = document.body;
+    if (/\\\(|\\\[|\$\$/.test(body.textContent || "")) {
+      if (!document.querySelector("link[data-ds-katex]")) {
+        var l = document.createElement("link"); l.rel = "stylesheet"; l.href = KATEX + "katex.min.css"; l.setAttribute("data-ds-katex", ""); document.head.appendChild(l);
+      }
+      need(KATEX + "katex.min.js", function(){ return !!window.katex; }, function(){
+        need(KATEX + "contrib/auto-render.min.js", function(){ return !!window.renderMathInElement; }, function(){
+          try { window.renderMathInElement(document.body, { delimiters: [{left:"$$",right:"$$",display:true},{left:"\\[",right:"\\]",display:true},{left:"\\(",right:"\\)",display:false}], throwOnError: false }); } catch (e) {}
+        });
+      });
+    }
+    if (body.querySelector("[data-plot]")) {
+      need(FPLOT, function(){ return !!window.functionPlot; }, function(){
+        document.querySelectorAll("[data-plot]").forEach(function(el){
+          if (el.querySelector("svg")) return;
+          try { var o = JSON.parse(el.getAttribute("data-plot")); var w = el.clientWidth || 620; o.target = el; o.width = o.width || w; o.height = o.height || Math.round(w * 0.55); if (o.disableZoom === undefined) o.disableZoom = true; if (o.grid === undefined) o.grid = true; window.functionPlot(o); } catch (e) {}
+        });
+      });
+    }
+  }
+  function typesetDraft(){
+    clearTimeout(tsTimer);
+    var wait = Math.max(0, 1200 - (Date.now() - tsLast));
+    tsTimer = setTimeout(typesetNow, wait);
+  }
 
   function init(){
     mount(); paintMode();
@@ -266,12 +308,17 @@ const BRIDGE = String.raw`(function(){
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init); else init();
   addEventListener("load", function(){
     setTimeout(function(){ controls.forEach(function(c){ applyTweak(c, c.value, true); }); post({ t: "pages", pages: pages() }); }, 0);
+    // A saved file written before math and graphs were handled on write has no renderer of its own: typeset it here.
+    var rawMath = !window.renderMathInElement && /\\\(|\\\[|\$\$/.test(document.body.textContent || "");
+    var rawPlot = [].some.call(document.querySelectorAll("[data-plot]"), function(el){ return !el.querySelector("svg"); });
+    if (rawMath || rawPlot) typesetNow();
   });
 })();`;
 
 export function buildSrcDoc(html: string) {
   const tag = `<script data-ds-bridge>${BRIDGE}</script>`;
-  if (/<\/body>/i.test(html)) return html.replace(/<\/body>(?![\s\S]*<\/body>)/i, `${tag}</body>`);
+  // A replacer function, not a string: in a replacement string "$$" means "$", which would corrupt the bridge.
+  if (/<\/body>/i.test(html)) return html.replace(/<\/body>(?![\s\S]*<\/body>)/i, () => `${tag}</body>`);
   return html + tag;
 }
 

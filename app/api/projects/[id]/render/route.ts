@@ -1,5 +1,6 @@
 import { getProject } from "@/lib/access";
 import { readFile } from "@/lib/projectData";
+import { prepareForDisplay } from "@/lib/finalize";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +17,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   const file = await readFile(res.admin, params.id, sp.get("path") ?? "", Number(sp.get("v")) || undefined);
   if (!file) return new Response("Not found", { status: 404 });
   const thumb = sp.get("thumb") === "1";
-  return new Response(file.content, {
+  return new Response(thumb ? file.content : prepareForDisplay(file.content), {
     headers: {
       "Content-Type": "text/html; charset=utf-8",
       "Content-Security-Policy": thumb ? "sandbox" : "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads",
