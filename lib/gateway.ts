@@ -12,7 +12,10 @@ export type ModelKey =
   | "mistral-nemotron"
   | "nemotron-super"
   | "nemotron-lightning"
-  | "gemma";
+  | "nemotron-ultra"
+  | "gemma"
+  | "deepseek-v4"
+  | "llama-vision";
 
 type ModelConfig = {
   id: string;
@@ -36,7 +39,9 @@ export const MODELS: Record<ModelKey, ModelConfig> = {
   "mistral-nemotron": { id: "mistralai/mistral-nemotron", label: "Mistral Nemotron", note: "Agentic workflows", provider: "nvidia", temperature: 0.6, top_p: 1, max_tokens: 16384 },
   "nemotron-super": { id: "nvidia/nemotron-3-super-120b-a12b", label: "Nemotron 3 Super", note: "Large MoE, high quality", provider: "nvidia", temperature: 0.6, top_p: 0.95, max_tokens: 16384 },
   "nemotron-lightning": { id: "nvidia/nemotron-3.5-lightning-30b-a3b", label: "Nemotron 3.5 Lightning", note: "Fast MoE", provider: "nvidia", temperature: 0.6, top_p: 0.95, max_tokens: 16384 },
+  "nemotron-ultra": { id: "nvidia/nemotron-3-ultra-550b-a55b", label: "Nemotron 3 Ultra", note: "Largest MoE, top quality", provider: "nvidia", temperature: 0.6, top_p: 0.95, max_tokens: 16384 },
   gemma: { id: "google/gemma-4-31b-it", label: "Gemma 4", note: "Google, 256K context", provider: "nvidia", temperature: 0.7, top_p: 0.95, max_tokens: 16384 },
+  "deepseek-v4": { id: "deepseek-ai/deepseek-v4.1-flash", label: "DeepSeek V4.1 Flash", note: "Via NVIDIA, 1M context", provider: "nvidia", temperature: 0.6, top_p: 1, max_tokens: 16384 },
   omni: {
     id: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
     label: "Nemotron Omni",
@@ -49,6 +54,7 @@ export const MODELS: Record<ModelKey, ModelConfig> = {
     buildable: false,
   },
   muse: { id: "meta/muse-glimmer-30b", label: "Muse Glimmer", note: "Sees images", provider: "nvidia", temperature: 0.9, top_p: 0.95, max_tokens: 8192, buildable: false },
+  "llama-vision": { id: "meta/llama-3.2-11b-vision-instruct", label: "Llama 3.2 Vision", note: "Sees images", provider: "nvidia", temperature: 0.6, top_p: 0.95, max_tokens: 4096, buildable: false },
 };
 
 export const MODEL_KEYS = Object.keys(MODELS) as ModelKey[];
@@ -73,7 +79,10 @@ export const FALLBACKS: Record<ModelKey, ModelKey[]> = {
   "mistral-nemotron": ["glm-flash", "glm"],
   "nemotron-super": ["glm-flash", "glm"],
   "nemotron-lightning": ["glm-flash", "glm"],
+  "nemotron-ultra": ["glm-flash", "glm"],
   gemma: ["glm-flash", "glm"],
+  "deepseek-v4": ["glm-flash", "glm"],
+  "llama-vision": ["glm-flash", "glm"],
 };
 
 const KEY_ENV = { nvidia: "NVIDIA_API_KEY", deepseek: "DEEPSEEK_API_KEY" } as const;

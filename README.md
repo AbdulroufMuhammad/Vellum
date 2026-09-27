@@ -33,13 +33,18 @@ read-only file, render and export endpoints they use).
   deployment stays locked; local development stays open.
 - **Models** (avatar menu → Models, `/access/models`, main key only): which
   build models show up in the Model picker. `lib/gateway.ts`'s `MODELS`
-  registry holds every model this app can call (GLM 5.3, GLM 5.3 Flash,
-  DeepSeek V3, and free NVIDIA NIM models: GPT-OSS 20B, Kimi K3, Mistral
-  Nemotron, Nemotron 3 Super, Nemotron 3.5 Lightning, Gemma 4; Nemotron Omni
-  and Muse Glimmer are vision-only and never offered as a build model). The
-  enabled subset is saved to the `app_settings` table (`lib/modelSettings.ts`)
-  and read by both Home and the project page; a project already using a model
-  that's since been disabled keeps it selectable.
+  registry holds every model this app can call: GLM 5.3, GLM 5.3 Flash,
+  DeepSeek V3 (DeepSeek's own API), and free NVIDIA NIM models (same
+  `NVIDIA_API_KEY`, `https://integrate.api.nvidia.com/v1`): DeepSeek V4.1
+  Flash, GPT-OSS 20B, Kimi K3, Mistral Nemotron, Nemotron 3 Super, Nemotron
+  3.5 Lightning, Nemotron 3 Ultra, Gemma 4. Nemotron Omni, Muse Glimmer and
+  Llama 3.2 Vision are vision-only (`describeImage()`'s fallback chain) and
+  never offered as a build model. `docs/nvidia-nim-catalog.md` has the full
+  ~100-model catalog this was drawn from, verified endpoint and all, and what
+  the rest of it could still be used for. The enabled subset is saved to the
+  `app_settings` table (`lib/modelSettings.ts`) and read by both Home and the
+  project page; a project already using a model that's since been disabled
+  keeps it selectable.
 
 ## How it works
 

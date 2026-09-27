@@ -1,6 +1,6 @@
 import { chat, type ModelKey } from "@/lib/gateway";
 
-const VISION_MODELS: ModelKey[] = ["omni", "muse"];
+const VISION_MODELS: ModelKey[] = ["omni", "muse", "llama-vision"];
 
 const DESCRIBE_PROMPT = `Describe this image for a designer who can't see it but has to build from it. Cover, as applicable:
 - What it is (a screenshot of an app/site, a logo, a photo, a sketch, a moodboard…).
