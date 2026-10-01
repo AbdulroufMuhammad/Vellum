@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { chat, modelKeyFor, MODELS, type ChatMessage, type ModelKey, type ToolSchema } from "@/lib/gateway";
 import { makeEmitter, type AgentEvent, type Emit } from "@/lib/events";
 import { FILE_TOOL_SCHEMAS, makeFileTools, cleanPath } from "@/lib/tools/files";
-import { SourceRegistry, WEB_TOOL_SCHEMAS } from "@/lib/tools/tavily";
+import { SourceRegistry, WEB_TOOL_SCHEMAS } from "@/lib/tools/search";
 import { GENAI_TOOL_SCHEMAS, generateImage, generateMesh3D } from "@/lib/tools/genai";
 import { VIDEO_TOOL_SCHEMA, generateVideo } from "@/lib/tools/video";
 import { makeRepoTools, REPO_TOOL_SCHEMAS } from "@/lib/tools/github";

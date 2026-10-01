@@ -1,16 +1,22 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-const TAVILY = "https://api.tavily.com";
+/**
+ * Web research, backed by Seekly (search.amatip.com): a self-hosted, Tavily-shaped search API
+ * (structured results, an /extract endpoint, ranking scores) built specifically to replace a paid
+ * Tavily subscription. Swapping providers only ever touches this file; everything else in the app
+ * (lib/agent.ts, lib/finalize.ts) imports Source/SourceRegistry/WEB_TOOL_SCHEMAS by name.
+ */
+const SEEKLY_URL = (process.env.SEEKLY_API_URL || "https://search.amatip.com").replace(/\/+$/, "");
 
 export type Source = { url: string; title?: string; text?: string };
 
-async function tv(path: string, body: Record<string, unknown>) {
-  const res = await fetch(TAVILY + path, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${process.env.TAVILY_API_KEY ?? ""}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`tavily ${res.status}: ${(await res.text()).slice(0, 300)}`);
+async function seekly<T = any>(path: string, params: Record<string, string | number | boolean | undefined>): Promise<T> {
+  const key = process.env.SEEKLY_API_KEY;
+  if (!key) throw new Error("web search isn't configured: SEEKLY_API_KEY is missing");
+  const url = new URL(SEEKLY_URL + path);
+  for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== "") url.searchParams.set(k, String(v));
+  const res = await fetch(url, { headers: { "X-API-Key": key } });
+  if (!res.ok) throw new Error(`seekly ${res.status}: ${(await res.text()).slice(0, 300)}`);
   return res.json();
 }
 
@@ -65,7 +71,7 @@ export class SourceRegistry {
 
   async search({ query, max_results = 6 }: { query: string; max_results?: number }) {
     this.spend();
-    const r = await tv("/search", { query, max_results: Math.min(10, Number(max_results) || 6), search_depth: "advanced" });
+    const r = await seekly("/v1/search", { q: query, max_results: Math.min(10, Number(max_results) || 6), search_depth: "advanced" });
     const out = [];
     for (const x of r.results ?? []) {
       const id = await this.register(x.url, x.title, x.content);
@@ -79,8 +85,10 @@ export class SourceRegistry {
     if (!src) throw new Error("unknown source_id; use an ID returned by web_search");
     this.spend();
     try {
-      const r = await tv("/extract", { urls: [src.url] });
-      src.text = r.results?.[0]?.raw_content ?? src.text;
+      // Document.content is the full extracted text (Seekly's /extract shape; unlike Tavily there's
+      // no separate raw_content wrapper).
+      const r = await seekly("/v1/extract", { url: src.url });
+      src.text = r.content ?? src.text;
       await this.persist(source_id);
     } catch {
       // keep the search snippet we already have

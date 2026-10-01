@@ -77,7 +77,9 @@ read-only file, render and export endpoints they use).
   never changes the UI.
 - **Design agent** (`lib/agent.ts`) — one conversational tool-use loop per
   message. Tools: `write_file` / `str_replace` / `read_file` (versioned HTML
-  files), `web_search` / `web_fetch` (Tavily, cited by short source IDs),
+  files), `web_search` / `web_fetch` (Seekly, a self-hosted Tavily-shaped
+  search API at search.amatip.com, `lib/tools/search.ts`; cited by short
+  source IDs),
   `repo_tree` / `repo_read` (the connected GitHub codebase), `generate_image` /
   `generate_3d_model` (real AI image and mesh generation, `lib/tools/genai.ts`),
   and `ask_questions` (a clarifying form of up to 8 questions, each with the
@@ -245,7 +247,7 @@ read-only file, render and export endpoints they use).
 ```bash
 cp .env.example .env.local
 # fill in SUPABASE_SERVICE_ROLE_KEY, NVIDIA_API_KEY / DEEPSEEK_API_KEY,
-# TAVILY_API_KEY, and optionally GITHUB_OWNER (public repos for the picker),
+# SEEKLY_API_KEY, and optionally GITHUB_OWNER (public repos for the picker),
 # GITHUB_TOKEN (main key only) and GITHUB_TOKEN_SECRET (encrypts the connected
 # GitHub account's token; defaults to one derived from the service-role key)
 npm install

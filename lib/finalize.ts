@@ -1,5 +1,5 @@
 import { parse, HTMLElement } from "node-html-parser";
-import type { Source } from "@/lib/tools/tavily";
+import type { Source } from "@/lib/tools/search";
 import { escapeMathAngles } from "@/lib/mathText";
 
 export { escapeMathAngles };
