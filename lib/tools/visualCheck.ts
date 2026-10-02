@@ -728,7 +728,7 @@ export async function checkDesign(
   db: SupabaseClient,
   projectId: string,
   html: string,
-  opts: { deadline: number; signal?: AbortSignal; request?: string; printPages?: [number, number] | null; renderTimeoutMs?: number }
+  opts: { deadline: number; signal?: AbortSignal; request?: string; printPages?: [number, number] | null; renderTimeoutMs?: number; reportStyle?: boolean }
 ): Promise<CheckResult> {
   // Rendering is capped: a browser that can't start or a page that never settles must not stall the turn.
   // The check step has its own invocation, so it can allow heavy pages (software WebGL) more time.
@@ -756,6 +756,9 @@ export async function checkDesign(
       text:
         (opts.request
           ? `The user asked for: "${opts.request.slice(0, 600)}"\nFirst check that the design actually shows what they asked for. Every subject, object or element they named must be clearly visible and in the right place (for example "a stickman on a tree" needs a visible stickman on the tree). Anything requested that is missing, cut off, off-screen or in the wrong place is a HIGH severity issue; don't assume it's there because a heading says so.\n\n`
+          : "") +
+        (opts.reportStyle
+          ? `This is a research report: before judging anything else, check that it leads with a short row of key-number stat tiles and a verdict panel (the actual answer, in a couple of sentences, with a few labeled stats around it) ahead of the prose sections. If the page is only paragraphs and plain tables with no such summary up front, that is a MEDIUM severity issue ("missing an up-front stat/verdict summary"). Also flag any ranked or scored list of items (confidence by factor, weight across options) given only as numbers with no bar or visual encoding next to them.\n\n`
           : "") + REVIEW_PROMPT,
     },
     ...tiles.map((t) => ({ type: "image_url" as const, image_url: { url: `data:image/jpeg;base64,${t.toString("base64")}` } })),

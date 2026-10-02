@@ -258,6 +258,11 @@ function systemPrompt(opts: { templateBrief: string; designSystem: string; codeb
 - Printable formats (documents, slides, résumés) include @page and page-break rules so browser print → PDF looks right.
 - Math: write LaTeX with \\( … \\) inline and \\[ … \\] for display equations (never single $ … $, which collides with prices). KaTeX is added to the page automatically, so don't hand-write math as plain text or Unicode.
 - Graphs of mathematical functions must be exact, never hand-drawn SVG curves. Write <div data-plot='{"xAxis":{"domain":[-1,3]},"yAxis":{"domain":[-1,9]},"data":[{"fn":"x^2","color":"#c67139"},{"fn":"x^2","derivative":{"fn":"2*x","x0":1}},{"fn":"x^2","closed":true,"range":[0,2]},{"fnType":"points","graphType":"scatter","points":[[1,1]]}]}'></div> (single-quoted attribute, strict JSON inside) and the page draws it with function-plot: fn strings use x, ^, sin, cos, tan, exp, log, sqrt, abs; derivative adds a tangent at x0; closed with range shades an area; fnType "points", "parametric" (x and y strings of t) and "polar" (r of theta) are available. For data charts (bars, lines of real numbers), use Chart.js from jsDelivr.
+- A report, memo or analysis (research, a brief, a recommendation) is a dashboard that happens to have prose in it, not prose with some tables attached. Before the first section, a short stat-tile row (one line, several small bordered boxes, label over value: the handful of numbers a reader would ask for first) and, right after it, a verdict panel: one or two sentences giving the actual answer, with a few labeled stat blocks around it (expected outcome, confidence, the biggest risk, what would change the call). That panel is what someone screenshots; it has to carry the finding on its own, with the body as backup. Never make the reader assemble the headline from paragraph three.
+  - Render ranked, scored or weighted items (confidence by factor, allocation across scenarios, how several candidates compare) as a labeled horizontal bar per item (a div whose width is set from the value, inline or via a CSS variable) with the number beside it, not as a bare table column of digits; a score with no bar is a missed chance to let the reader's eye compare magnitudes.
+  - Render comparisons that come in twos (bull vs. bear, before vs. after, this option vs. that one, what supports the call vs. what breaks it) as a two-column card grid, each side its own bordered block, not as two separate paragraphs the reader has to hold in their head at once.
+  - Pull out the decision-relevant lines (triggers, thresholds, invalidation conditions, what to watch for) into their own visually distinct block (a colored or bordered callout, a compact "if this, then that" table) instead of leaving them embedded in running prose where they read as just another sentence.
+  - Still true throughout: real computed numbers, not invented ones; a chart or bar only where there is a real number behind it.
 
 ## Tweaks
 Expose 2–5 meaningful live controls when they'd help the user explore (accent color, density, speed, which screen to show, a layout variant). Declare them in the file as:
@@ -702,7 +707,14 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     /** Render a file in a browser and review it; shared by the agent's own check_design calls and the automatic check. */
     const runCheck = async (path: string) => {
       const f = await fileTools.read_file({ path });
-      const c = await checkDesign(db, projectId, f.content, { deadline, signal, request: requestText(), printPages, renderTimeoutMs: phase === "check" || /three|webgl/i.test(f.content) ? 90_000 : undefined });
+      const c = await checkDesign(db, projectId, f.content, {
+        deadline,
+        signal,
+        request: requestText(),
+        printPages,
+        renderTimeoutMs: phase === "check" || /three|webgl/i.test(f.content) ? 90_000 : undefined,
+        reportStyle: template.id === "research",
+      });
       // Counted only once it ran: a check the server's browser couldn't finish doesn't use up the file's checks.
       checks.set(f.path, (checks.get(f.path) ?? 0) + 1);
       checksRun++;

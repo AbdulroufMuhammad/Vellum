@@ -247,7 +247,7 @@ export const TEMPLATES: Template[] = [
       ],
     },
     brief:
-      'A cited research report laid out for print: US Letter pages with @page rules, a title block, a summary that leads with the answer, then sections with the evidence. Its length follows the depth the user picks when you scope the research first; declare it with <meta name="pages" content="3-5">. Use web_search and web_fetch to gather real facts. Every factual sentence ends with its source ID in brackets like [S3] or [S3, S5]; a numbered sources list is appended automatically, so don\'t write one. Use tables or charts only where there are real numbers.',
+      'A cited research report laid out for print: US Letter pages with @page rules, a title block, a stat-tile row of the key numbers, then a verdict panel giving the actual answer up front (see the dashboard guidance in Design quality), then sections with the evidence. Its length follows the depth the user picks when you scope the research first; declare it with <meta name="pages" content="3-5">. Use web_search and web_fetch to gather real facts. Every factual sentence ends with its source ID in brackets like [S3] or [S3, S5]; a numbered sources list is appended automatically, so don\'t write one. Use tables, bar-chart-style comparisons and charts wherever there are real numbers to show, not just where a table is the obvious choice.',
   },
   {
     id: "email",
