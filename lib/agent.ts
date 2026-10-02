@@ -16,6 +16,7 @@ import { planPreviewHtml, planningPlaceholderHtml } from "@/lib/planPreview";
 import { is3DRequest } from "@/lib/threeD";
 import { babylonGuide } from "@/lib/babylon3D";
 import { isCinematicRequest, cinematicGuide } from "@/lib/cinematic";
+import { wantsResearch, researchGuide, SKILL_RESEARCH_SOURCES } from "@/lib/research-skill";
 import { describeForAgent, fromRow, type DesignSystem } from "@/lib/designSystems";
 import { describeImage } from "@/lib/tools/vision";
 import { listFiles, readFile } from "@/lib/projectData";
@@ -268,7 +269,7 @@ function systemPrompt(opts: { templateBrief: string; designSystem: string; codeb
 Expose 2–5 meaningful live controls when they'd help the user explore (accent color, density, speed, which screen to show, a layout variant). Declare them in the file as:
 <script type="application/json" id="tweaks">[{"name":"accent","label":"Accent","type":"color","value":"#d9774f"},{"name":"speed","type":"range","min":200,"max":2000,"step":50,"value":700,"unit":"ms"},{"name":"startScreen","type":"select","options":["home","detail"],"value":"home"},{"name":"grid","type":"toggle","value":false}]</script>
 The canvas applies every value as a CSS custom property on :root (--accent, --speed with its unit, --grid as 1/0), as an attribute on <html> (data-start-screen="detail"; camelCase names become kebab-case), and fires window.addEventListener("tweak", e => e.detail.name / e.detail.value) on load and on every change. Use var(--name) in CSS or the event in JS.
-${opts.threeD ? `\n${babylonGuide()}\n` : ""}${opts.cinematic ? `\n${cinematicGuide()}\n` : ""}${opts.research ? `\n## Research\nSearch with targeted queries, web_fetch the best sources, then write; stop searching once you can answer at the depth the user chose. Cite every factual sentence as [S3] or [S3, S5] using only IDs you were given; a numbered sources list is added automatically. Never write URLs as citations. This turn's research allowance is ${opts.researchSources} searches and fetches.\nPrefer the primary source over secondhand retellings of it: the original document, paper, filing, dataset, ruling, spec or firsthand statement that the blogs and social posts are themselves summarizing — whatever form that takes for this particular topic (a company's own filing or press release for a business/finance question; the paper itself, not a press writeup, for a scientific one; the statute, ruling or docket for a legal one; the standard or spec for a technical one; a primary account for a historical one). If the first searches return mostly blogs, aggregators and social posts, refine the query toward where the original would actually live — the regulator or registry, the publisher or preprint server, the court or agency, the standards body, the subject's own domain — rather than settling for coverage of coverage. web_fetch reads PDFs as well as HTML, so don't skip a result just because it's a PDF — primary documents very often are.\n` : "\n## Facts\nDraft first. Write the design straight away from what you know; use web_search / web_fetch only for a specific real-world fact you'd otherwise get wrong, and cite it as [S3]. Most design work needs no search at all, and each turn allows at most 6 searches and fetches.\n"}
+${opts.threeD ? `\n${babylonGuide()}\n` : ""}${opts.cinematic ? `\n${cinematicGuide()}\n` : ""}${opts.research ? `\n${researchGuide(opts.researchSources)}\n` : "\n## Facts\nDraft first. Write the design straight away from what you know; use web_search / web_fetch only for a specific real-world fact you'd otherwise get wrong, and cite it as [S3]. Most design work needs no search at all, and each turn allows at most 6 searches and fetches.\n"}
 ## This project
 Starting template: ${opts.templateBrief}
 ${opts.designSystem || "No design system selected. Choose a fitting visual direction yourself."}
@@ -509,7 +510,8 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     const answeredForm = (history ?? []).some((m) => m.role === "user" && m.meta?.answers);
     const depth = template.id === "research" ? depthFrom(userTexts) ?? (answeredForm ? DEFAULT_DEPTH : null) : null;
     const mustScope = template.id === "research" && !depth && !answeredForm;
-    sources.turnLimit = template.id === "research" ? (depth ?? DEFAULT_DEPTH).sources : 6;
+    const needsResearch = template.id === "research" || wantsResearch(template.id, userTexts[0] ?? String(project.goal ?? ""));
+    sources.turnLimit = template.id === "research" ? (depth ?? DEFAULT_DEPTH).sources : needsResearch ? SKILL_RESEARCH_SOURCES : 6;
     // The printed page count the automatic check holds the design to (a file can also declare its own with <meta name="pages">).
     const printPages: [number, number] | null = template.id === "resume" ? [1, 1] : depth ? depth.pages : null;
     // A new request starts fresh versions; resumed steps of the same request keep updating the same ones.
@@ -583,7 +585,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             templateBrief: `${template.label}. ${template.brief}`,
             designSystem: describeSystems(systems),
             codebase: project.codebase,
-            research: template.id === "research",
+            research: needsResearch,
             researchSources: sources.turnLimit,
             threeD: is3DRequest(template.id, String(newest?.content ?? project.goal ?? "")),
             cinematic: isCinematicRequest(template.id, String(newest?.content ?? project.goal ?? "")),
