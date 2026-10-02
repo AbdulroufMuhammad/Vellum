@@ -17,6 +17,7 @@ import { is3DRequest } from "@/lib/threeD";
 import { babylonGuide } from "@/lib/babylon3D";
 import { isCinematicRequest, cinematicGuide } from "@/lib/cinematic";
 import { wantsResearch, researchGuide, SKILL_RESEARCH_SOURCES } from "@/lib/research-skill";
+import { CodeSandbox, RUN_CODE_SCHEMA, type DataFile } from "@/lib/tools/sandbox";
 import { describeForAgent, fromRow, type DesignSystem } from "@/lib/designSystems";
 import { describeImage } from "@/lib/tools/vision";
 import { listFiles, readFile } from "@/lib/projectData";
@@ -228,7 +229,7 @@ async function saveDesignSystem(db: SupabaseClient, projectId: string, settings:
   return fromRow(data);
 }
 
-function systemPrompt(opts: { templateBrief: string; designSystem: string; codebase: string | null; research: boolean; researchSources: number; threeD: boolean; cinematic: boolean }) {
+function systemPrompt(opts: { templateBrief: string; designSystem: string; codebase: string | null; research: boolean; researchSources: number; threeD: boolean; cinematic: boolean; dataFiles: DataFile[] }) {
   return `You are the design agent in Vellum, a design tool where people describe what they want and you make it on a live canvas. You work like a senior product designer who writes production-quality HTML, CSS and JavaScript.
 
 ## Files
@@ -269,7 +270,11 @@ function systemPrompt(opts: { templateBrief: string; designSystem: string; codeb
 Expose 2–5 meaningful live controls when they'd help the user explore (accent color, density, speed, which screen to show, a layout variant). Declare them in the file as:
 <script type="application/json" id="tweaks">[{"name":"accent","label":"Accent","type":"color","value":"#d9774f"},{"name":"speed","type":"range","min":200,"max":2000,"step":50,"value":700,"unit":"ms"},{"name":"startScreen","type":"select","options":["home","detail"],"value":"home"},{"name":"grid","type":"toggle","value":false}]</script>
 The canvas applies every value as a CSS custom property on :root (--accent, --speed with its unit, --grid as 1/0), as an attribute on <html> (data-start-screen="detail"; camelCase names become kebab-case), and fires window.addEventListener("tweak", e => e.detail.name / e.detail.value) on load and on every change. Use var(--name) in CSS or the event in JS.
-${opts.threeD ? `\n${babylonGuide()}\n` : ""}${opts.cinematic ? `\n${cinematicGuide()}\n` : ""}${opts.research ? `\n${researchGuide(opts.researchSources)}\n` : "\n## Facts\nDraft first. Write the design straight away from what you know; use web_search / web_fetch only for a specific real-world fact you'd otherwise get wrong, and cite it as [S3]. Most design work needs no search at all, and each turn allows at most 6 searches and fetches.\n"}
+${opts.threeD ? `\n${babylonGuide()}\n` : ""}${opts.cinematic ? `\n${cinematicGuide()}\n` : ""}${opts.research ? `\n${researchGuide(opts.researchSources)}\n` : "\n## Facts\nDraft first. Write the design straight away from what you know; use web_search / web_fetch only for a specific real-world fact you'd otherwise get wrong, and cite it as [S3]. Most design work needs no search at all, and each turn allows at most 6 searches and fetches.\n"}${
+    opts.dataFiles.length
+      ? `\n## Data files\nAttached: ${opts.dataFiles.map((f) => `"${f.name}"`).join(", ")}. Don't guess at their contents or eyeball numbers from a paraphrase — call run_code (real Python, pandas/openpyxl preinstalled) to actually read them, at /tmp/data/<name>, and compute real results: matched/unmatched rows, totals, variances, whatever the request needs. Print a JSON summary to stdout and use those exact numbers in the design — never invent or round a number run_code didn't produce. A reconciliation or data-comparison result is a dashboard the same way a research report is (see Design quality): a stat-tile row of the headline counts, a verdict panel, and the mismatches themselves in a real table, not a wall of prose. Treat run_code like web_search: use it to get the numbers, then build.\n`
+      : ""
+  }
 ## This project
 Starting template: ${opts.templateBrief}
 ${opts.designSystem || "No design system selected. Choose a fitting visual direction yourself."}
@@ -430,6 +435,8 @@ function describeUserMessage(m: { content: string; meta: any }, full: boolean) {
       text += `\n\n(Attached video clip "${a.name}": ${a.url} , ${a.seconds ?? "?"}s, ${a.width ?? "?"}×${a.height ?? "?"}. Its first frame: ${a.first_frame_url ?? "none"} ; its last frame: ${a.last_frame_url ?? "none"}. Use the clip as-is (never regenerate it) and the first frame as its poster.)`;
     } else if (a.kind === "folder") {
       text += full && a.content ? `\n\nAttached local code folder "${a.name}", the UI files of their codebase. Match its visual language:\n${String(a.content).slice(0, 120000)}` : `\n\n(Attached code folder "${a.name}")`;
+    } else if (a.kind === "data") {
+      text += `\n\n(Attached data file "${a.name}". Use run_code to actually read it and compute real numbers from it — don't guess at what's in it.)`;
     } else {
       text += full && a.content ? `\n\nAttached file "${a.name}":\n${String(a.content).slice(0, 40000)}` : `\n\n(Attached file "${a.name}")`;
     }
@@ -512,6 +519,15 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     const mustScope = template.id === "research" && !depth && !answeredForm;
     const needsResearch = template.id === "research" || wantsResearch(template.id, userTexts[0] ?? String(project.goal ?? ""));
     sources.turnLimit = template.id === "research" ? (depth ?? DEFAULT_DEPTH).sources : needsResearch ? SKILL_RESEARCH_SOURCES : 6;
+    // Spreadsheets attached anywhere in the conversation, not just the latest message: the user might
+    // attach a file in one message and ask to work with it in a later one.
+    const dataFiles: DataFile[] = [];
+    for (const m of history ?? []) {
+      for (const a of (m.meta?.attachments ?? []) as any[]) {
+        if (a.kind === "data" && typeof a.url === "string" && !dataFiles.some((f) => f.url === a.url)) dataFiles.push({ name: a.name, url: a.url });
+      }
+    }
+    const codeSandbox = new CodeSandbox();
     // The printed page count the automatic check holds the design to (a file can also declare its own with <meta name="pages">).
     const printPages: [number, number] | null = template.id === "resume" ? [1, 1] : depth ? depth.pages : null;
     // A new request starts fresh versions; resumed steps of the same request keep updating the same ones.
@@ -555,7 +571,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     if (settings.buildModel && !buildModel) buildModel = settings.buildModel;
     const phaseFresh = !!settings.phaseFresh;
     if (phaseFresh) delete settings.phaseFresh;
-    const baseTools = [...WEB_TOOL_SCHEMAS, ...GENAI_TOOL_SCHEMAS, VIDEO_TOOL_SCHEMA, ...(repo ? REPO_TOOL_SCHEMAS : [])];
+    const baseTools = [...WEB_TOOL_SCHEMAS, ...GENAI_TOOL_SCHEMAS, VIDEO_TOOL_SCHEMA, ...(repo ? REPO_TOOL_SCHEMAS : []), ...(dataFiles.length ? [RUN_CODE_SCHEMA] : [])];
     const tools: ToolSchema[] =
       // A half-written file always needs the file tools, whatever the step.
       phase === "plan" && !settings.partial
@@ -589,6 +605,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             researchSources: sources.turnLimit,
             threeD: is3DRequest(template.id, String(newest?.content ?? project.goal ?? "")),
             cinematic: isCinematicRequest(template.id, String(newest?.content ?? project.goal ?? "")),
+            dataFiles,
           }) + (summary ? `\n\n## Earlier in this conversation (summarized)\n${summary}` : ""),
       },
     ];
@@ -1141,6 +1158,13 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
                 summary = { source: { id: f.id, title: f.title, url: sources.sources.get(f.id)?.url } };
                 break;
               }
+              case "run_code": {
+                if (!dataFiles.length) throw new Error("no data file is attached to this project; ask the user to attach a spreadsheet first");
+                const r = await codeSandbox.run(args, dataFiles);
+                result = r;
+                summary = { exitCode: r.exitCode, stdout: r.stdout.slice(0, 2000), outputFiles: r.outputFiles.map((f) => f.name) };
+                break;
+              }
               case "generate_image": {
                 const img = await generateImage(db, projectId, args, { deadline, signal });
                 result = img;
@@ -1245,6 +1269,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     } finally {
       settled = true;
       await touch({ status, budget: { ...(project.budget ?? {}), searchesLeft: sources.searchesLeft } });
+      await codeSandbox.stop();
       await emit({ type: "done", payload: {} });
     }
   } finally {

@@ -5,7 +5,7 @@ import type { FileEntry, StoredMessage } from "@/lib/projectData";
 import type { Attachment } from "@/components/ui/Attachments";
 import { IconClose, IconFile, IconRefresh } from "@/components/ui/Icons";
 
-type Upload = { name: string; kind: "image" | "text" | "folder" | "video"; url?: string; poster?: string; at: string; pending?: boolean };
+type Upload = { name: string; kind: "image" | "text" | "folder" | "video" | "data"; url?: string; poster?: string; at: string; pending?: boolean };
 
 function ago(iso: string) {
   const s = (Date.now() - new Date(iso).getTime()) / 1000;
@@ -140,7 +140,7 @@ export default function FilesBrowser({
               <span className={`fb-icon ${u.kind}`}>{u.kind === "image" && u.url ? <img src={u.url} alt="" /> : u.kind === "video" && u.poster ? <img src={u.poster} alt="" /> : <IconFile size={15} />}</span>
               <span className="fb-name">
                 {u.name}
-                <small>{u.kind === "image" ? (/^sketch/i.test(u.name) ? "Sketch" : "Image") : u.kind === "folder" ? "Code folder" : u.kind === "video" ? "Video clip" : "Text"}{u.pending ? " · attached to your next message" : ""}</small>
+                <small>{u.kind === "image" ? (/^sketch/i.test(u.name) ? "Sketch" : "Image") : u.kind === "folder" ? "Code folder" : u.kind === "video" ? "Video clip" : u.kind === "data" ? "Data file" : "Text"}{u.pending ? " · attached to your next message" : ""}</small>
               </span>
               <span className="fb-time" suppressHydrationWarning>
                 {u.pending ? "" : ago(u.at)}

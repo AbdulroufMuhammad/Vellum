@@ -4,10 +4,10 @@ import { useRef, useState } from "react";
 import Popover, { MenuItem } from "@/components/ui/Popover";
 import { IconClose, IconCode, IconFile, IconPlus } from "@/components/ui/Icons";
 
-/** Text files carry `content`; images and videos carry a public `url` the agent can also use in designs. */
+/** Text files carry `content`; images, videos and data files carry a public `url` (images/videos for use in designs, data files for run_code to read). */
 export type Attachment = {
   name: string;
-  kind?: "text" | "image" | "folder" | "video";
+  kind?: "text" | "image" | "folder" | "video" | "data";
   content?: string;
   url?: string;
   first_frame_url?: string;
@@ -21,6 +21,7 @@ const MAX_TEXT_BYTES = 200_000;
 const TEXT_EXT = /\.(txt|md|markdown|csv|tsv|json|html?|css|scss|less|jsx?|tsx?|mjs|svg|xml|ya?ml|toml|vue|svelte|astro)$/i;
 const IMAGE_TYPES = /^image\/(png|jpeg|webp|gif)$/;
 const VIDEO_TYPES = /^video\/(mp4|webm|quicktime)$/;
+const DATA_EXT = /\.(xlsx|xls)$/i;
 const MAX_FILES = 12;
 const MAX_IMAGE_SIDE = 1600;
 
@@ -116,7 +117,21 @@ async function uploadVideo(file: File): Promise<Attachment> {
   };
 }
 
-/** Turn picked, dropped or pasted files into attachments: images and videos are uploaded, text files are read. */
+/** Excel files go straight from the browser to storage through a signed URL: run_code reads them in full, so they aren't inlined as text (and .xlsx is binary — reading it as text would corrupt it). */
+async function uploadDataFile(file: File): Promise<Attachment> {
+  const res = await fetch("/api/uploads/data", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: file.name, type: file.type, size: file.size }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? "Upload failed");
+  const put = await fetch(data.uploadUrl, { method: "PUT", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file });
+  if (!put.ok) throw new Error(`Uploading "${file.name}" failed (${put.status})`);
+  return { kind: "data", name: data.name ?? file.name, url: data.url };
+}
+
+/** Turn picked, dropped or pasted files into attachments: images, videos and spreadsheets are uploaded, text files are read. */
 export async function filesToAttachments(files: File[]): Promise<Attachment[]> {
   const out: Attachment[] = [];
   // Clips keep the order they're picked in, sorted by name so "01-…", "02-…" land in scene order.
@@ -124,6 +139,7 @@ export async function filesToAttachments(files: File[]): Promise<Attachment[]> {
   for (const f of sorted.slice(0, MAX_FILES)) {
     if (IMAGE_TYPES.test(f.type)) out.push(await uploadImage(f));
     else if (VIDEO_TYPES.test(f.type)) out.push(await uploadVideo(f));
+    else if (DATA_EXT.test(f.name)) out.push(await uploadDataFile(f));
     else if (TEXT_EXT.test(f.name) && f.size <= MAX_TEXT_BYTES) out.push({ kind: "text", name: f.name, content: await f.text() });
   }
   return out;
@@ -186,7 +202,7 @@ export function AttachButton({ onAdd, className = "icon-btn" }: { onAdd: (a: Att
                 close();
                 files.current?.click();
               }}
-              hint="PNG, JPG, MP4, text"
+              hint="PNG, JPG, MP4, Excel, text"
             >
               <IconFile size={14} /> Images, videos or files
             </MenuItem>
@@ -206,7 +222,7 @@ export function AttachButton({ onAdd, className = "icon-btn" }: { onAdd: (a: Att
         ref={files}
         type="file"
         multiple
-        accept="image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm,video/quicktime,.txt,.md,.csv,.tsv,.json,.html,.htm,.css,.js,.jsx,.ts,.tsx,.svg,.xml,.yaml,.yml"
+        accept="image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm,video/quicktime,.xlsx,.xls,.txt,.md,.csv,.tsv,.json,.html,.htm,.css,.js,.jsx,.ts,.tsx,.svg,.xml,.yaml,.yml"
         hidden
         onChange={(e) => {
           handle([...(e.target.files ?? [])], false);

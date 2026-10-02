@@ -53,6 +53,9 @@ function toolLabel(name: string, p: any, done: boolean): string {
       return done ? `Saved design system “${p.dsName ?? p.args?.name ?? ""}”` : `Saving design system “${p.args?.name ?? ""}”`;
     case "ask_questions":
       return done ? "Asked a few questions" : "Writing a few questions";
+    case "run_code":
+      if (!done) return "Running code";
+      return `Ran code · ${p.exitCode === 0 ? "succeeded" : `exit ${p.exitCode}`}`;
     default:
       return name;
   }

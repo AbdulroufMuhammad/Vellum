@@ -12,6 +12,7 @@
   "dependencies": {
     "@sparticuz/chromium": "^153.0.0",
     "@supabase/supabase-js": "^2.45.4",
+    "@vercel/sandbox": "^3.5.1",
     "next": "14.2.35",
     "node-html-parser": "^7.1.0",
     "playwright-core": "^1.63.0",

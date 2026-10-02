@@ -1,6 +1,6 @@
 export type StoredAttachment = {
   name: string;
-  kind: "text" | "image" | "folder" | "video";
+  kind: "text" | "image" | "folder" | "video" | "data";
   content?: string;
   url?: string;
   description?: string;
@@ -46,6 +46,10 @@ export function cleanAttachments(list: unknown): StoredAttachment[] {
         width: num(a.width),
         height: num(a.height),
       });
+    } else if (a.kind === "data") {
+      // Excel/binary data files: the bytes live in storage, not inlined (they're meant for run_code
+      // to read in full, not to be pasted into the model's context).
+      if (isOwnUpload(a.url)) out.push({ kind: "data", name, url: a.url });
     } else if (typeof a.content === "string") {
       const kind = a.kind === "folder" ? "folder" : "text";
       out.push({ kind, name, content: a.content.slice(0, kind === "folder" ? MAX_FOLDER : MAX_TEXT) });
