@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { extractText, getDocumentProxy } from "unpdf";
 
 /**
  * Web research, backed by Seekly (search.amatip.com): a self-hosted, Tavily-shaped search API
@@ -18,6 +19,16 @@ async function seekly<T = any>(path: string, params: Record<string, string | num
   const res = await fetch(url, { headers: { "X-API-Key": key } });
   if (!res.ok) throw new Error(`seekly ${res.status}: ${(await res.text()).slice(0, 300)}`);
   return res.json();
+}
+
+/** Seekly's /v1/extract only reads HTML; a prospectus, filing or press release is often a PDF, so fetch and extract that ourselves. */
+async function extractPdfText(url: string): Promise<string> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`pdf fetch ${res.status}`);
+  const buf = new Uint8Array(await res.arrayBuffer());
+  const doc = await getDocumentProxy(buf);
+  const { text } = await extractText(doc, { mergePages: true });
+  return text;
 }
 
 /**
@@ -90,8 +101,16 @@ export class SourceRegistry {
       const r = await seekly("/v1/extract", { url: src.url });
       src.text = r.content ?? src.text;
       await this.persist(source_id);
-    } catch {
-      // keep the search snippet we already have
+    } catch (err: any) {
+      if (/application\/pdf/i.test(String(err?.message)) || /\.pdf(?:[?#]|$)/i.test(src.url)) {
+        try {
+          src.text = await extractPdfText(src.url);
+          await this.persist(source_id);
+        } catch {
+          // keep the search snippet we already have
+        }
+      }
+      // else: keep the search snippet we already have
     }
     return { id: source_id, title: src.title, text: (src.text ?? "").slice(0, 20000) };
   }
@@ -110,7 +129,7 @@ export const WEB_TOOL_SCHEMAS = [
     type: "function" as const,
     function: {
       name: "web_fetch",
-      description: "Read the full text of a source previously returned by web_search.",
+      description: "Read the full text of a source previously returned by web_search. Works on PDFs too (a prospectus, filing or press release), not just HTML pages.",
       parameters: { type: "object", properties: { source_id: { type: "string" } }, required: ["source_id"] },
     },
   },

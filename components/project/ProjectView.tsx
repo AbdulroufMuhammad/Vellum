@@ -252,8 +252,16 @@ export default function ProjectView({ initial, systems, models }: { initial: Pro
       const ev: StoredEvent = { id: e.id ?? `live-${tempId++}`, type: e.type, payload: p, created_at: e.created_at ?? new Date().toISOString() };
       setEvents((es) => [...es, ev]);
       if (e.type === "thought") setLiveReasoning("");
-      if (e.type === "note") setLiveText("");
-      if (e.type === "tool-call") setLiveText("");
+      if (e.type === "note") {
+        setLiveText("");
+        setLiveReasoning("");
+      }
+      if (e.type === "tool-call") {
+        setLiveText("");
+        // Once a real action (a search, a file edit) is visibly underway, stop showing it as
+        // buried inside the "Thinking" bubble — the Activity row for it now speaks for itself.
+        setLiveReasoning("");
+      }
       if (e.type === "tool-result" && p.name === "save_design_system" && p.system) {
         setDsList((list) => [...list.filter((d) => d.id !== p.system.id), p.system]);
         setProject((pr) => ({ ...pr, design_system_id: p.system.id }));
