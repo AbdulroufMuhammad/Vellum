@@ -34,7 +34,8 @@ const HEARTBEAT_MS = 10_000;
 // A step that has only been thinking this long (nothing written, no tool call) is stopped and told to act on its plan.
 // Reasoning models otherwise deliberate for the whole turn: GLM spent 270s planning a business card.
 const THINK_LIMIT_MS = Number(process.env.THINK_LIMIT_MS ?? 45_000);
-const MAX_THINK_CUTS = 2;
+// Once a request is being written (or has been cut off for deliberating), thinking is off and a pass that still reasons is cut much sooner.
+const WRITER_THINK_MS = Number(process.env.WRITER_THINK_MS ?? 12_000);
 
 class ThinkLimit extends Error {
   name = "ThinkLimit";
@@ -341,8 +342,8 @@ type ProjectSettings = {
   phaseFresh?: boolean;
   /** The build step's closing line, used as the reply when the check finds nothing to fix. */
   buildReply?: string;
-  /** Legacy: older runs handed a long-deliberating request to a fixed build model. No longer set; cleared when seen. */
-  buildModel?: ModelKey;
+  /** The rest of this request is written by a fresh, non-thinking pass of the same model (set when it deliberated past the limit). */
+  writer?: boolean;
   /** File versions this request is still writing (see WorkingVersions); cleared when the request is done. */
   workingVersions?: Record<string, number>;
   /** The design system this project made and saved to the picker, and its spec file; revisions to that file update it. */
@@ -552,7 +553,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     if (!opts.resume) {
       delete settings.plan;
       delete settings.buildReply;
-      delete settings.buildModel;
+      delete settings.writer;
       if (big && !isEdit && !mustScope && !mustAsk) {
         settings.phase = "plan";
         settings.phaseFresh = true;
@@ -636,7 +637,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
       context +=
         "\n\n## This step: planning\nThis request is done in three steps, each with its own time: plan (now), build, then a browser check. In this step, understand the request, research anything you need (web_search / web_fetch), ask_questions only if something essential is unclear, then call submit_plan with a concrete plan: the visual direction (palette with hex values, a Google Fonts pairing, layout), every section with its real content, the file names, and any interactions or tweaks. Don't write files in this step.";
     } else if (phase === "build" && settings.plan) {
-      context += `\n\n## This step: building\nThe planning step produced this plan:\n"""\n${planText(settings.plan)}\n"""\nBuild it now, faithfully: write_file the design (append_file for the rest if it's long). No need to re-plan; decide any small details as you go. When the files are written, reply in one short sentence; a browser check runs as the next step.`;
+      context += `\n\n## This step: building\nThe planning step produced this plan:\n"""\n${planText(settings.plan)}\n"""\nBuild it now, faithfully. Your thinking is off for this step: the thinking already happened in the plan, so don't deliberate and never draft the file in your head or in your reasoning, just write it. Write it in parts, each its own tool call of roughly 4,000 to 6,000 characters: write_file the <head>, the styles and the first sections, then append_file for each following group of sections, and finish with the closing </body></html>. Never try to produce the whole file in one call. Decide any small details as you go. When the files are written, reply in one short sentence; a browser check runs as the next step.`;
     } else if (phase === "check" && settings.plan) {
       context += `\n\n## This step: checking\nThe design was built from this plan:\n"""\n${planText(settings.plan)}\n"""`;
     }
@@ -751,12 +752,12 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     };
 
     const finish = async (reply: string | null) => {
-      if (settings.phase || settings.plan || settings.buildReply || settings.buildModel || settings.workingVersions || settings.checkRounds) {
+      if (settings.phase || settings.plan || settings.buildReply || settings.writer || settings.workingVersions || settings.checkRounds) {
         delete settings.checkRounds;
         delete settings.phase;
         delete settings.plan;
         delete settings.buildReply;
-        delete settings.buildModel;
+        delete settings.writer;
         // Done (and checked): the versions written in this request are final; the next change starts new ones.
         delete settings.workingVersions;
         await db.from("projects").update({ settings }).eq("id", projectId);
@@ -832,14 +833,18 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
         const onTurnAbort = () => stepCtrl.abort(signal.reason);
         signal.addEventListener("abort", onTurnAbort);
         let acted = false;
+        // Writing a plan's design (build) or fixing it (check) is a fresh pass of the same model with its thinking off: the thinking
+        // was the plan. A request that was cut off for deliberating stays in that mode for the rest of it (settings.writer).
+        const writerMode = !!settings.writer || phase === "build" || phase === "check";
         // Re-checked every second once past the limit: slow thinkers may not have written much yet when it's first reached.
-        const thinkLimit = THINK_LIMIT_MS * (phase === "plan" ? 4 / 3 : 1);
-        const thinkTimer =
-          thinkCuts < MAX_THINK_CUTS
-            ? setInterval(() => {
-                if (!acted && Date.now() - stepStart > thinkLimit && stepReasoning.length > 200) stepCtrl.abort(new ThinkLimit("thought too long without acting"));
-              }, 1000)
-            : undefined;
+        const thinkLimit = writerMode ? WRITER_THINK_MS : THINK_LIMIT_MS * (phase === "plan" ? 4 / 3 : 1);
+        // A model that drafts the deliverable inside its reasoning (the whole HTML and CSS) burns the time budget and starts
+        // over on the next invocation: that's cut at once, whatever the clock says.
+        const draftingInThought = () => stepReasoning.length > 2500 && /<!doctype html|<html[\s>]|<style[\s>]|```(?:html|css)\b/i.test(stepReasoning.slice(-6000));
+        const thinkTimer = setInterval(() => {
+          if (acted) return;
+          if ((Date.now() - stepStart > thinkLimit && stepReasoning.length > 200) || draftingInThought()) stepCtrl.abort(new ThinkLimit("thought too long without acting"));
+        }, 1000);
         let r;
         try {
           r = await chat(currentModel, {
@@ -847,6 +852,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             tools,
             deadline,
             signal: stepCtrl.signal,
+            thinking: writerMode ? "off" : undefined,
             onToken: (t) => {
               acted = true;
               void emit({ type: "token", payload: { t } });
@@ -902,13 +908,20 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             thinkCuts++;
             const plan = stepReasoning.trim();
             await emit({ type: "thought", payload: { text: plan.length > 12000 ? "…" + plan.slice(-12000) : plan, ms: Date.now() - stepStart } });
-            // The selected model is told to act on its own plan; it is never swapped for another model mid-request.
+            // Deliberating instead of acting: from here the request is written by a fresh, non-thinking pass of the same model
+            // (never another model), which keeps going across time-limit continues instead of rethinking the whole thing.
+            if (phase !== "plan" && !settings.writer) {
+              settings.writer = true;
+              await db.from("projects").update({ settings }).eq("id", projectId);
+              await emit({ type: "note", payload: { text: `Thought it through; handing the writing to a fresh pass of ${MODELS[currentModel].label} with thinking off, so it starts writing now.` } });
+            }
+            const draft = plan.length > 6000 ? "…" + plan.slice(-4000) : plan;
             convo.push({
               role: "user",
               content:
                 phase === "plan"
-                  ? `You've thought enough; time to hand in the plan. Your thinking so far:\n"""\n${plan.slice(-6000)}\n"""\nCall submit_plan now with a concrete plan based on it. Keep any further thinking to a few sentences.`
-                  : `You've planned enough; time to build. Your plan so far:\n"""\n${plan.slice(-6000)}\n"""\nAct on it now: call write_file with the design (append_file for the rest if it's long). Keep any further thinking to a few sentences; you can refine after the first version is on the canvas.`,
+                  ? `You've thought enough; time to hand in the plan. Your thinking so far:\n"""\n${draft}\n"""\nCall submit_plan now with a concrete plan based on it. Keep any further thinking to a few sentences.`
+                  : `Stop thinking and write. Your notes so far:\n"""\n${draft}\n"""\nCall write_file now with the <head>, the styles and the first sections only (about 4,000 to 6,000 characters), then continue with append_file for the next sections, in parts. Do not draft anything in your reasoning and do not try to produce the whole file in one call.`,
             });
             continue;
           }

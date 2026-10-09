@@ -197,9 +197,16 @@ read-only file, render and export endpoints they use).
   in the chat: **planning** (think, research, ask; hand in a plan with
   `submit_plan`, shown as a plan card), **building** (write the files from the
   plan) and **checking** (browser check first, then fixes and the reply).
-  Small follow-up edits run as one step. A step that only deliberates for 45s
-  (90s when planning) is cut, its thinking kept, and the same selected model is
-  told to act on that plan — the model never changes mid-request.
+  Small follow-up edits run as one step. The plan step may think (60s, and a
+  model that starts drafting the file inside its reasoning is cut at once). The
+  build and check steps are a fresh pass of the **same** selected model with
+  thinking switched off (the thinking was the plan): the file is written in
+  parts of 4–6k characters (`write_file`, then `append_file`), so a time-limit
+  continue picks up the next part instead of rethinking everything. An edit that
+  deliberates for 45s is cut and switches to that mode for the rest of the
+  request (`settings.writer`). The model never changes mid-request. If an
+  endpoint rejects the no-thinking switch, it's called without it and the 12s
+  watchdog still cuts a pass that reasons anyway.
 - **Pages and files** — the canvas header's menu lists the project's pages
   (newest first, with edit times), a **New blank page**, and **All project
   files**: pages and uploads side by side with a preview, **New sketch** (a

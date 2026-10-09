@@ -67,6 +67,10 @@ export function modelKeyFor(stored: string | null | undefined): ModelKey {
   return stored === "fast" ? "glm-flash" : "glm";
 }
 
+// Models whose endpoint rejected the "no thinking" switch: it isn't sent to them again.
+const noThinkSwitch = new Set<ModelKey>();
+const THINKING_OFF = { chat_template_kwargs: { enable_thinking: false }, thinking: { type: "disabled" } };
+
 const KEY_ENV = { nvidia: "NVIDIA_API_KEY", deepseek: "DEEPSEEK_API_KEY" } as const;
 
 export type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
@@ -101,6 +105,12 @@ export type ChatOpts = {
   /** Absolute epoch ms; the whole call is cut off here. */
   deadline: number;
   signal?: AbortSignal;
+  /**
+   * "off" asks a reasoning model to answer without its thinking phase (a fresh, focused pass that just writes). Sent as
+   * the chat-template switch NVIDIA's hosted reasoning models accept; a model or endpoint that rejects it is called
+   * without it from then on (callers keep their own limit on how long it may deliberate anyway).
+   */
+  thinking?: "off";
   /** Per-call overrides, e.g. a small token/reasoning budget for quick reviews. */
   maxTokens?: number;
   extra?: Record<string, unknown>;
@@ -166,6 +176,7 @@ async function chatOnce(modelKey: ModelKey, opts: ChatOpts, onFirstByte: () => v
   armIdle();
 
   try {
+    let thinkOff = opts.thinking === "off" && m.provider === "nvidia" && !noThinkSwitch.has(modelKey);
     const send = () =>
       fetch(`${url}/chat/completions`, {
         method: "POST",
@@ -179,6 +190,7 @@ async function chatOnce(modelKey: ModelKey, opts: ChatOpts, onFirstByte: () => v
           top_p: m.top_p,
           max_tokens: opts.maxTokens ?? m.max_tokens,
           ...(opts.tools?.length ? { tools: opts.tools, tool_choice: "auto" } : {}),
+          ...(thinkOff ? THINKING_OFF : {}),
           ...m.extra,
           ...opts.extra,
           ...pinned.get(modelKey),
@@ -186,9 +198,15 @@ async function chatOnce(modelKey: ModelKey, opts: ChatOpts, onFirstByte: () => v
       });
     let res = await send();
     // A model that only accepts one value for a sampling setting says which: use it, and remember it (up to 3 settings).
-    for (let i = 0; i < 3 && res.status === 400; i++) {
+    for (let i = 0; i < 3 && (res.status === 400 || res.status === 422); i++) {
       const text = await res.text();
       const need = requiredSetting(text);
+      if (!need && thinkOff && /chat_template|enable_thinking|thinking|extra|unexpected|unknown|not permitted|unsupported/i.test(text)) {
+        noThinkSwitch.add(modelKey); thinkOff = false;
+        console.log(`[gateway] ${m.id} rejected the no-thinking switch; calling it without`);
+        res = await send();
+        continue;
+      }
       if (!need) throw new GatewayError(res.status, text);
       pinned.set(modelKey, { ...pinned.get(modelKey), [need[0]]: need[1] });
       console.log(`[gateway] ${m.id} requires ${need[0]}=${need[1]}; retrying with it`);
