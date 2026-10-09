@@ -125,7 +125,7 @@ export class GatewayError extends Error {
 // A design file can take minutes to stream, so the per-attempt limit is on
 // silence, not total length: a stream that keeps producing tokens runs until
 // the caller's deadline.
-const IDLE_TIMEOUT_MS = 45_000;
+const IDLE_TIMEOUT_MS = Number(process.env.IDLE_TIMEOUT_MS ?? 45_000);
 
 function baseFor(provider: ModelConfig["provider"]) {
   if (provider === "nvidia") {
@@ -296,11 +296,21 @@ async function chatOnce(modelKey: ModelKey, opts: ChatOpts, onFirstByte: () => v
  * (degenerate) stream, which is worthless even if it already streamed, so the same model gets one more go.
  */
 export async function chat(modelKey: ModelKey, opts: ChatOpts): Promise<ChatResult> {
-  let retried = false;
+  let retried = false, silentRetried = false;
   for (;;) {
+    let streamed = false;
     try {
-      return await chatOnce(modelKey, opts, () => {});
+      return await chatOnce(modelKey, opts, () => (streamed = true));
     } catch (e) {
+      // The endpoint never answered at all (a stalled or queued request, which is common on shared endpoints right after another
+      // call): ask the same model once more, without its thinking phase so the answer starts sooner. Nothing was streamed, so
+      // nothing is repeated, and if the turn's own deadline is what ran out there's no time left to retry.
+      if (e instanceof IdleTimeout && /stopped responding/.test(e.message) && !streamed && !silentRetried && !opts.signal?.aborted && opts.deadline - Date.now() > 25_000) {
+        console.log(`[gateway] ${MODELS[modelKey].id}: no response; retrying once`);
+        silentRetried = true;
+        opts = { ...opts, thinking: opts.thinking ?? "off" };
+        continue;
+      }
       if (e instanceof DegenerateOutput && !retried && !opts.signal?.aborted) {
         console.log(`[gateway] ${MODELS[modelKey].id}: ${e.message}; retrying once`);
         retried = true;

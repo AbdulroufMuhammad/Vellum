@@ -852,7 +852,8 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             tools,
             deadline,
             signal: stepCtrl.signal,
-            thinking: writerMode ? "off" : undefined,
+            // Planning that was cut once submits its plan from the notes it already has, without thinking all over again.
+            thinking: writerMode || (phase === "plan" && thinkCuts > 0) ? "off" : undefined,
             onToken: (t) => {
               acted = true;
               void emit({ type: "token", payload: { t } });
