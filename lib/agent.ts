@@ -705,6 +705,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     const checkDeferred = !!settings.pendingCheck;
     let badCalls = 0;
     let thinkCuts = 0;
+    let stallCuts = 0;
     let status: "ready" | "paused" = "ready";
     // The write_file call being streamed, so a turn cut off by the time limit can hand its partial file to the next round.
     let writing: { path: string; args: string } | null = null;
@@ -908,13 +909,20 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             await finish(touched.size ? "Stopped. What's on the canvas so far is saved." : null);
             break;
           }
-          if (e instanceof ThinkLimit || (e as any)?.name === "ThinkLimit") {
+          // The endpoint streamed some reasoning and then went quiet (the gateway already tried once more): the notes it did produce are
+          // worth more than the turn, so handle it like a cut for deliberating instead of ending the request with an error.
+          const stalled =
+            (e as any)?.name === "TimeoutError" && /stopped responding/.test(String((e as any)?.message)) && !acted && stepReasoning.trim().length > 600 && stallCuts < 2 && deadline - Date.now() > 40_000;
+          if (stalled) stallCuts++;
+          if (e instanceof ThinkLimit || (e as any)?.name === "ThinkLimit" || stalled) {
             thinkCuts++;
             const plan = stepReasoning.trim();
             await emit({ type: "thought", payload: { text: plan.length > 12000 ? "…" + plan.slice(-12000) : plan, ms: Date.now() - stepStart } });
             // Deliberating instead of acting: from here the request is written by a fresh, non-thinking pass of the same model
             // (never another model), which keeps going across time-limit continues instead of rethinking the whole thing.
-            if (phase !== "plan" && !settings.writer) {
+            // The first step of a new request only asks its questions: it has nothing to write yet, so it isn't switched to writing.
+            const asking = mustAsk || mustScope;
+            if (phase !== "plan" && !asking && !settings.writer) {
               settings.writer = true;
               await db.from("projects").update({ settings }).eq("id", projectId);
               await emit({ type: "note", payload: { text: `Thought it through; handing the writing to a fresh pass of ${MODELS[currentModel].label} with thinking off, so it starts writing now.` } });
@@ -923,7 +931,9 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             convo.push({
               role: "user",
               content:
-                phase === "plan"
+                asking
+                  ? `You've thought enough. Call ask_questions now with the form described above, in this reply, and nothing else. Your thinking so far:\n"""\n${draft}\n"""`
+                  : phase === "plan"
                   ? `You've thought enough; time to hand in the plan. Your thinking so far:\n"""\n${draft}\n"""\nCall submit_plan now with a concrete plan based on it. Keep any further thinking to a few sentences.`
                   : `Stop thinking and write. Your notes so far:\n"""\n${draft}\n"""\nCall write_file now with the <head>, the styles and the first sections only (about 4,000 to 6,000 characters), then continue with append_file for the next sections, in parts. Do not draft anything in your reasoning and do not try to produce the whole file in one call.`,
             });
@@ -942,7 +952,14 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             await emit({ type: "continue", payload: {} });
             break;
           }
-          await emit({ type: "error", payload: { message: e instanceof Error ? e.message : String(e) } });
+          await emit({
+            type: "error",
+            payload: {
+              message: e instanceof Error ? e.message : String(e),
+              // What the step was doing when it failed, so a failed run explains itself from its own log.
+              detail: { phase: phase ?? "edit", model: currentModel, writer: !!settings.writer, stepMs: Date.now() - stepStart, reasoningChars: stepReasoning.length, acted, thinkCuts, stallCuts, msLeft: deadline - Date.now() },
+            },
+          });
           break;
         } finally {
           clearInterval(thinkTimer);
