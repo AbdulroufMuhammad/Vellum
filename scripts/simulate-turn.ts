@@ -15,11 +15,17 @@
  *   thinks-then-writes  GLM's worst case: in the normal tool loop the model only ever reasons (never acts within any limit),
  *                 but asked by the fresh writing session it writes the page. Covers a new build and an edit (EDIT_MESSAGE).
  *   thinks-long   the model reasons for a long time in the plan step before calling submit_plan
+ *   glm-build     GLM 5.3, whose endpoint sends a tool call only once it's complete (minutes of silence, nothing on the canvas):
+ *                 the page must be written by the fresh writing session, which streams it, not as a write_file call.
+ *   stalls-mid-answer  the endpoint goes quiet halfway through streaming write_file (NVIDIA does, now and then): the part written
+ *                 is kept and the next round appends the rest. Must end with the whole page, not "model stopped responding".
  *
  * The check step really renders the page in headless Chromium (set CHROMIUM_PATH to a Chromium binary).
  *
+ * The tool-loop scenarios run as GPT-OSS (a model whose endpoint streams tool calls); MODEL overrides it.
+ *
  * Real models: npx tsx scripts/simulate-turn.ts real   (needs NVIDIA_API_KEY; MODEL=glm by default, EDIT_MESSAGE for an edit,
- * OUT_DIR to save the final page). The real agent loop and real model, only the database is the in-memory stand-in. Real limits.
+ * OUT_DIR to save the final page, BASE_FILE for the page an edit starts from). The real agent loop and real model, only the database is the in-memory stand-in. Real limits.
  */
 import http from "node:http";
 import { randomUUID } from "node:crypto";
@@ -176,6 +182,20 @@ const modelServer = http.createServer((req, res) => {
       if (scenario === "dumps-text") return reply("build-done", [{ content: "I saved it. Here is the code again:\n```html\n" + pageHtml + "\n```" }], "page pasted again after saving");
       return reply("build-done", [{ content: "Built the invoice." }], "done");
     }
+    if (scenario === "stalls-mid-answer" && building && !afterTool) {
+      const resumed = /The first (\d+) characters are saved/.exec(text);
+      if (resumed) return reply("append-rest", toolCall("append_file", { path: "Superbio Invoice Demo.html", content: pageHtml.slice(Number(resumed[1])) }), "append_file with the rest");
+      // half of the write_file call, then silence (the connection stays open)
+      requests.push({ kind: "stall", reply: "" });
+      const args = JSON.stringify({ path: "Superbio Invoice Demo.html", content: pageHtml });
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_stall", type: "function", function: { name: "write_file", arguments: "" } }] }, finish_reason: null }] })}\n\n`);
+      for (let i = 0; i < Math.floor(args.length * 0.6); i += 300) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: args.slice(i, Math.min(i + 300, Math.floor(args.length * 0.6))) } }] }, finish_reason: null }] })}\n\n`);
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      return;
+    }
     if (building && !toolNames.includes("check_design")) {
       if (scenario === "dumps-text" || scenario === "dumps-forever") return reply("build", [{ content: "Here is the invoice:\n\n```html\n" + pageHtml + "\n```\n\nLet me know if you want changes." }], "page as chat text");
       return reply("build", toolCall("write_file", { path: "Superbio Invoice Demo.html", content: pageHtml }), "write_file tool call");
@@ -196,18 +216,19 @@ async function main() {
   }
   process.env.NEXT_PUBLIC_SUPABASE_URL = "http://fake.local"; process.env.SUPABASE_SERVICE_ROLE_KEY = "test";
   process.env.CHROMIUM_PATH ??= "/opt/pw-browsers/chromium-1194/chrome-linux/chrome";
+  if (scenario === "stalls-mid-answer") { process.env.IDLE_TIMEOUT_MS ??= "3000"; process.env.TOOL_IDLE_TIMEOUT_MS ??= "3000"; }
   if (!real) { process.env.THINK_LIMIT_MS ??= "2000"; process.env.WRITER_THINK_MS ??= "2000"; process.env.PLAN_THINK_MS ??= "30000"; }
   // A short turn budget so a loop shows up in seconds rather than minutes (each invocation is one "turn").
   if (scenario === "edit-reasons" || scenario === "thinks-then-writes") process.env.TURN_BUDGET_MS ??= process.env.EDIT_MESSAGE ? "130000" : "45000";
   const { runTurn } = await import("../lib/agent");
 
   const projectId = randomUUID();
-  tables.projects.push({ id: projectId, title: "Create an invoice demo for Superbio", template: "blank", model_profile: process.env.MODEL ?? "glm", design_system_id: null, goal: "Create an invoice demo for Superbio", status: "idle", budget: { tokensLeft: 200000, searchesLeft: 40, rounds: 0, maxRounds: 3 }, settings: {}, codebase: null, run_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+  tables.projects.push({ id: projectId, title: "Create an invoice demo for Superbio", template: "blank", model_profile: process.env.MODEL ?? (["thinks-then-writes", "edit-reasons", "glm-build", "real"].includes(scenario) ? "glm" : "gpt-oss"), design_system_id: null, goal: "Create an invoice demo for Superbio", status: "idle", budget: { tokensLeft: 200000, searchesLeft: 40, rounds: 0, maxRounds: 3 }, settings: {}, codebase: null, run_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
   tables.messages.push({ id: randomUUID(), project_id: projectId, role: "user", content: "Create an invoice demo for Superbio", meta: {}, created_at: new Date(Date.now() - 2000).toISOString() });
   tables.messages.push({ id: randomUUID(), project_id: projectId, role: "user", content: "How deep should this go?\n→ Standard", meta: { answers: { scope: "Standard" } }, created_at: new Date(Date.now() - 1000).toISOString() });
   if (scenario === "edit-reasons" || ((scenario === "thinks-then-writes" || real) && process.env.EDIT_MESSAGE)) {
     // The invoice already exists (v1); the user then asks for a redesign, as in the GLM project.
-    storage.set(`${projectId}/v1.html`, pageHtml);
+    storage.set(`${projectId}/v1.html`, process.env.BASE_FILE ? (await import("node:fs")).readFileSync(process.env.BASE_FILE, "utf8") : pageHtml);
     tables.files.push({ id: randomUUID(), project_id: projectId, path: "Invoice Demo.html", version: 1, storage_path: `${projectId}/v1.html`, content_type: "text/html", created_at: new Date(Date.now() - 900).toISOString() });
     tables.messages.push({ id: randomUUID(), project_id: projectId, role: "assistant", content: "Built the invoice.", meta: {}, created_at: new Date(Date.now() - 800).toISOString() });
     tables.messages.push({ id: randomUUID(), project_id: projectId, role: "user", content: process.env.EDIT_MESSAGE ?? "Make the UI better", meta: {}, created_at: new Date(Date.now() - 700).toISOString() });
@@ -259,7 +280,12 @@ async function main() {
   const chatHasCode = /```|<!doctype/i.test(final?.content ?? "");
   modelServer.close();
   const expectFile = scenario !== "prose-only";
-  const ok = expectFile ? wrote && !chatHasCode : !chatHasCode;
+  // (saving adds a viewport meta tag and data-el attributes; otherwise the page must be exactly the one the model wrote, in two parts)
+  const whole = scenario !== "stalls-mid-answer" || (storage.get(newest?.storage_path ?? "") ?? "").replace(/<meta name="viewport"[^>]*>/, "").replace(/ data-el="[^"]*"/g, "") === pageHtml;
+  if (!whole) { const got = (storage.get(newest?.storage_path ?? "") ?? "").replace(/<meta name="viewport"[^>]*>/, "").replace(/ data-el="[^"]*"/g, ""); let i = 0; while (got[i] === pageHtml[i]) i++; console.log(`the saved page isn't the whole page: ${got.length} vs ${pageHtml.length}, at ${i}: ${JSON.stringify(got.slice(i - 30, i + 60))} vs ${JSON.stringify(pageHtml.slice(i - 30, i + 60))}`); }
+  const viaWriter = scenario !== "glm-build" || (requests.some((r) => r.kind === "writer") && !requests.some((r) => r.kind === "build"));
+  if (!viaWriter) console.log("GLM's page didn't go through the writing session");
+  const ok = (expectFile ? wrote && !chatHasCode : !chatHasCode) && whole && viaWriter;
   console.log(ok ? "RESULT: ok" : "RESULT: FAILED (" + (!wrote && expectFile ? "no file saved" : "code was left in the chat") + ")");
   process.exit(ok ? 0 : 1);
 }

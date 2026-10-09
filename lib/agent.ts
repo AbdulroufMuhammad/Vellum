@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { chat, ignoresThinkingOff, modelKeyFor, MODELS, type ChatMessage, type ChatResult, type ModelKey, type ToolSchema } from "@/lib/gateway";
+import { buffersToolCalls, chat, ignoresThinkingOff, modelKeyFor, MODELS, type ChatMessage, type ChatResult, type ModelKey, type ToolSchema } from "@/lib/gateway";
 import { writeDocument } from "@/lib/writer";
 import { makeEmitter, type AgentEvent, type Emit } from "@/lib/events";
 import { FILE_TOOL_SCHEMAS, makeFileTools, cleanPath } from "@/lib/tools/files";
@@ -747,7 +747,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
       // In the check step the job is fixing what the browser check found: the writer gets that list too.
       const findings = [...convo].reverse().find((m) => m.role === "user" && typeof m.content === "string" && m.content.startsWith("An automatic check"));
       const callId = `fresh-write-${Date.now()}`;
-      await emit({ type: "note", payload: { text: `Handing the notes to a fresh writing session of ${MODELS[currentModel].label}.` } });
+      await emit({ type: "note", payload: { text: notes ? `Handing the notes to a fresh writing session of ${MODELS[currentModel].label}.` : settings.partial?.path === path ? `Carrying on with "${path}" where it stopped.` : `Writing "${path}" from the plan.` } });
       await emit({ type: "tool-call", payload: { callId, name: "write_file", args: { path } } });
       let sent = "", lastEmit = 0;
       try {
@@ -767,6 +767,8 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
           media: settings.media?.length ? settings.media.map((m) => `${m.tool}: ${m.url}`).join("\n") : null,
           deadline: deadline - STOP_MARGIN_MS,
           signal,
+          // An earlier session ran out of time partway through this file: carry on from where it stopped.
+          resumeFrom: settings.partial?.path === path ? settings.partial.content : null,
           onText: (doc) => {
             const now = Date.now();
             if (now - lastEmit < 250) return;
@@ -776,12 +778,20 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             sent = doc;
           },
         });
+        if (!out.complete && deadline - Date.now() < STOP_MARGIN_MS + 20_000) {
+          // Out of time partway through: keep what's written for the next round (the file itself is left as it was).
+          settings.partial = { path, content: out.written };
+          await db.from("projects").update({ settings }).eq("id", projectId);
+          await emit({ type: "tool-result", payload: { callId, name: "write_file", error: `Paused by the time limit after ${out.written.length} characters; continuing in the next round.` } });
+          return null;
+        }
         const w = await fileTools.write_file({ path, content: out.html });
         unchecked = w.path;
         const prev = touched.get(w.path);
         touched.set(w.path, { version: w.version, created: prev?.created ?? w.created });
-        if (settings.partialThought) {
+        if (settings.partialThought || settings.partial?.path === w.path) {
           delete settings.partialThought;
+          if (settings.partial?.path === w.path) delete settings.partial;
           await db.from("projects").update({ settings }).eq("id", projectId);
         }
         await emit({ type: "tool-result", payload: { callId, name: "write_file", path: w.path, version: w.version, created: w.created } });
@@ -922,13 +932,33 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
         // A model that drafts the deliverable inside its reasoning (the whole HTML and CSS) burns the time budget and starts
         // over on the next invocation: that's cut at once, whatever the clock says.
         const draftingInThought = () => phase !== "plan" && stepReasoning.length > 2500 && /<!doctype html|<html[\s>]|<style[\s>]|```(?:html|css)\b/i.test(stepReasoning.slice(-6000));
+        // When the reasoning has stopped and the stream is quiet, the model is writing its answer: an endpoint that sends a tool call only
+        // once it's complete (GLM 5.3 on NVIDIA) is silent all the while, and cutting it then throws away the plan or page it's writing.
+        let lastReasoningAt = 0;
         const thinkTimer = setInterval(() => {
           if (acted || !cutting) return;
-          if ((Date.now() - stepStart > thinkLimit && stepReasoning.length > 200) || draftingInThought()) stepCtrl.abort(new ThinkLimit("thought too long without acting"));
+          const stillThinking = Date.now() - lastReasoningAt < 10_000;
+          if ((Date.now() - stepStart > thinkLimit && stepReasoning.length > 200 && stillThinking) || draftingInThought()) stepCtrl.abort(new ThinkLimit("thought too long without acting"));
         }, 1000);
-        let r;
+        let r: ChatResult | undefined;
+        // The page goes through a fresh writing session, which streams it to the canvas as plain HTML: when an earlier session ran out of
+        // time partway through it, and for a model whose endpoint doesn't stream tool calls (its page would arrive in one piece, minutes
+        // later, after nothing at all on the canvas). The plan is the thinking; the session only writes it.
+        const buffers = buffersToolCalls(currentModel);
+        const viaWriter =
+          phase !== "plan" && !mustAsk && !mustScope &&
+          (settings.partial ? !!settings.writer || buffers : buffers && phase === "build" && !!settings.plan && !touched.size);
+        if (viaWriter) {
+          const written = await writeFresh("");
+          if (written) r = written;
+          else if (settings.partial && deadline - Date.now() < STOP_MARGIN_MS + 20_000) {
+            clearInterval(thinkTimer);
+            signal.removeEventListener("abort", onTurnAbort);
+            continue;
+          }
+        }
         try {
-          r = await chat(currentModel, {
+          if (!r) r = await chat(currentModel, {
             messages: convo,
             tools,
             deadline,
@@ -941,6 +971,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             },
             onReasoning: (t) => {
               stepReasoning += t;
+              lastReasoningAt = Date.now();
               void emit({ type: "reasoning", payload: { t } });
             },
             onToolDelta: (index, name, args) => {
@@ -991,6 +1022,20 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
           const stalled =
             (e as any)?.name === "TimeoutError" && /stopped responding/.test(String((e as any)?.message)) && !acted && stepReasoning.trim().length > 600 && stallCuts < 2 && deadline - Date.now() > 40_000;
           if (stalled) stallCuts++;
+          // The endpoint went quiet partway through an answer (NVIDIA's shared endpoints do, now and then): nothing the model did is
+          // wrong, so the step is asked again instead of ending the request. A file it had started writing is kept, and the next
+          // round carries on from it (that's where the "continue from here" instructions are given).
+          if (!stalled && acted && (e as any)?.name === "TimeoutError" && /stopped responding/.test(String((e as any)?.message)) && stallCuts < 2) {
+            stallCuts++;
+            await savePartial();
+            await emit({ type: "note", payload: { text: `${MODELS[currentModel].label} stopped responding partway through; asking again.` } });
+            if (settings.partial || deadline - Date.now() < 60_000) {
+              status = "paused";
+              await emit({ type: "continue", payload: {} });
+              break;
+            }
+            continue;
+          }
           if (e instanceof ThinkLimit || (e as any)?.name === "ThinkLimit" || stalled) {
             thinkCuts++;
             settings.thinkCuts = thinkCuts;

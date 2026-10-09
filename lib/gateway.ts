@@ -27,11 +27,17 @@ type ModelConfig = {
   extra?: Record<string, unknown>;
   /** False for a model that's only ever used internally (vision description), never offered as a build model. */
   buildable?: boolean;
+  /**
+   * The endpoint doesn't stream tool calls: a call arrives whole, after the model has finished writing it, with nothing sent
+   * before (GLM 5.3 on NVIDIA: a 6,700-character write_file came after 51s of silence). Such a call can't be told from a dead
+   * stream by silence alone, and a page written as a tool call never shows on the canvas while it's written.
+   */
+  buffersToolCalls?: boolean;
 };
 
 export const MODELS: Record<ModelKey, ModelConfig> = {
-  glm: { id: "z-ai/glm-5.3", label: "GLM 5.3", note: "Best quality", provider: "nvidia", temperature: 0.6, top_p: 1, max_tokens: 16384 },
-  "glm-flash": { id: "z-ai/glm-5.3-flash", label: "GLM 5.3 Flash", note: "Faster, lighter", provider: "nvidia", temperature: 0.6, top_p: 1, max_tokens: 16384 },
+  glm: { id: "z-ai/glm-5.3", label: "GLM 5.3", note: "Best quality", provider: "nvidia", temperature: 0.6, top_p: 1, max_tokens: 16384, buffersToolCalls: true },
+  "glm-flash": { id: "z-ai/glm-5.3-flash", label: "GLM 5.3 Flash", note: "Faster, lighter", provider: "nvidia", temperature: 0.6, top_p: 1, max_tokens: 16384, buffersToolCalls: true },
   deepseek: { id: "deepseek-chat", label: "DeepSeek V3", note: "DeepSeek API", provider: "deepseek", temperature: 0.6, top_p: 1, max_tokens: 8192 },
   "gpt-oss": { id: "openai/gpt-oss-20b", label: "GPT-OSS 20B", note: "Open-weight, agentic", provider: "nvidia", temperature: 0.7, top_p: 1, max_tokens: 16384 },
   kimi: { id: "moonshotai/kimi-k3", label: "Kimi K3", note: "Long context", provider: "nvidia", temperature: 0.6, top_p: 0.95, max_tokens: 16384 },
@@ -74,7 +80,9 @@ const keepsThinking = new Set<ModelKey>();
 export function ignoresThinkingOff(key: ModelKey) {
   return keepsThinking.has(key);
 }
-const THINKING_OFF = { chat_template_kwargs: { enable_thinking: false }, thinking: { type: "disabled" } };
+// GLM 5.3 on NVIDIA ignores the chat-template switch and "thinking: disabled" (it reasons for minutes before writing a page);
+// reasoning_effort "low" is the setting it honours: no reasoning, and the answer starts within a couple of seconds.
+const THINKING_OFF = { chat_template_kwargs: { enable_thinking: false }, thinking: { type: "disabled" }, reasoning_effort: "low" };
 
 const KEY_ENV = { nvidia: "NVIDIA_API_KEY", deepseek: "DEEPSEEK_API_KEY" } as const;
 
@@ -131,6 +139,13 @@ export class GatewayError extends Error {
 // silence, not total length: a stream that keeps producing tokens runs until
 // the caller's deadline.
 const IDLE_TIMEOUT_MS = Number(process.env.IDLE_TIMEOUT_MS ?? 45_000);
+// For a model that sends a tool call only once it's complete (buffersToolCalls), silence is how a long call looks while it's written.
+const TOOL_IDLE_TIMEOUT_MS = Number(process.env.TOOL_IDLE_TIMEOUT_MS ?? 180_000);
+
+/** True for a model whose endpoint sends each tool call whole, at the end (see ModelConfig.buffersToolCalls). */
+export function buffersToolCalls(key: ModelKey) {
+  return !!MODELS[key].buffersToolCalls;
+}
 
 function baseFor(provider: ModelConfig["provider"]) {
   if (provider === "nvidia") {
@@ -171,9 +186,10 @@ async function chatOnce(modelKey: ModelKey, opts: ChatOpts, onFirstByte: () => v
   const { url, key } = baseFor(m.provider);
   const ctrl = new AbortController();
   let idle: ReturnType<typeof setTimeout> | undefined;
+  const idleMs = m.buffersToolCalls && opts.tools?.length ? Math.max(IDLE_TIMEOUT_MS, TOOL_IDLE_TIMEOUT_MS) : IDLE_TIMEOUT_MS;
   const armIdle = () => {
     clearTimeout(idle);
-    idle = setTimeout(() => ctrl.abort(new IdleTimeout("model stopped responding")), IDLE_TIMEOUT_MS);
+    idle = setTimeout(() => ctrl.abort(new IdleTimeout("model stopped responding")), idleMs);
   };
   const hard = setTimeout(() => ctrl.abort(new IdleTimeout("turn deadline reached")), Math.max(1000, opts.deadline - Date.now()));
   const onAbort = () => ctrl.abort(opts.signal?.reason);
@@ -206,7 +222,7 @@ async function chatOnce(modelKey: ModelKey, opts: ChatOpts, onFirstByte: () => v
     for (let i = 0; i < 3 && (res.status === 400 || res.status === 422); i++) {
       const text = await res.text();
       const need = requiredSetting(text);
-      if (!need && thinkOff && /chat_template|enable_thinking|thinking|extra|unexpected|unknown|not permitted|unsupported/i.test(text)) {
+      if (!need && thinkOff && /chat_template|enable_thinking|thinking|reasoning_effort|extra|unexpected|unknown|not permitted|unsupported/i.test(text)) {
         noThinkSwitch.add(modelKey); thinkOff = false;
         console.log(`[gateway] ${m.id} rejected the no-thinking switch; calling it without`);
         res = await send();

@@ -46,9 +46,12 @@ export type WriteDocumentOpts = {
   onText?: (soFar: string) => void;
   /** Reasoning, if the model thinks before writing. */
   onReasoning?: (t: string) => void;
+  /** The start of the document, written by an earlier session that ran out of time: only the rest is written. */
+  resumeFrom?: string | null;
 };
 
-export type WriteDocumentResult = { html: string; calls: number; complete: boolean };
+/** `html` is always a whole document (closed if need be); `written` is exactly what was written, for resuming when `complete` is false. */
+export type WriteDocumentResult = { html: string; calls: number; complete: boolean; written: string };
 
 const MAX_NOTES = 12_000;
 
@@ -128,23 +131,30 @@ export async function writeDocument(o: WriteDocumentOpts): Promise<WriteDocument
         const doc = prefix ? joinContinuation(prefix, soFar) : documentPart(soFar);
         if (doc) o.onText(doc);
       },
+    }).catch((e) => {
+      // Out of time partway through the document: what's written is kept (and resumed later), not thrown away.
+      if (e instanceof Error && /deadline/.test(e.message) && (prefix || documentPart(soFar))) return { content: soFar, reasoning: "", toolCalls: [], finish: "deadline", usage: null };
+      throw e;
     });
     return r;
   };
 
   let calls = 0;
+  let doc: string | null = o.resumeFrom?.trim() ? o.resumeFrom : null;
   const first: ChatMessage[] = [
     { role: "system", content: system },
     { role: "user", content: firstMessage(o) },
   ];
-  let r = await ask(first, "");
-  calls++;
-  let doc = documentPart(r.content);
   if (!doc) {
-    // It answered with prose (or only reasoned): one plain reminder of the only thing this session is for.
-    r = await ask([...first, { role: "assistant", content: r.content.slice(0, 2000) || "…" }, { role: "user", content: "Reply with the complete HTML document only, starting with <!doctype html>. No other text." }], "");
+    const r = await ask(first, "");
     calls++;
     doc = documentPart(r.content);
+    if (!doc && r.finish !== "deadline") {
+      // It answered with prose (or only reasoned): one plain reminder of the only thing this session is for.
+      const again = await ask([...first, { role: "assistant", content: r.content.slice(0, 2000) || "…" }, { role: "user", content: "Reply with the complete HTML document only, starting with <!doctype html>. No other text." }], "");
+      calls++;
+      doc = documentPart(again.content);
+    }
   }
   if (!doc) throw new Error("the writing session didn't return an HTML document");
 
@@ -166,5 +176,5 @@ export async function writeDocument(o: WriteDocumentOpts): Promise<WriteDocument
     o.onText?.(doc);
   }
   const complete = isComplete(doc);
-  return { html: complete ? doc : closeDocument(doc), calls, complete };
+  return { html: complete ? doc : closeDocument(doc), calls, complete, written: doc };
 }
