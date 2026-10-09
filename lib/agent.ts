@@ -15,6 +15,7 @@ import { DEFAULT_DEPTH, depthFrom, withDepthQuestion } from "@/lib/research";
 import { planPreviewHtml, planningPlaceholderHtml } from "@/lib/planPreview";
 import { is3DRequest } from "@/lib/threeD";
 import { babylonGuide } from "@/lib/babylon3D";
+import { physicsGuide, wantsPhysics } from "@/lib/babylonFilm";
 import { isCinematicRequest, cinematicGuide } from "@/lib/cinematic";
 import { wantsResearch, researchGuide, SKILL_RESEARCH_SOURCES } from "@/lib/research-skill";
 import { CodeSandbox, RUN_CODE_SCHEMA, type DataFile } from "@/lib/tools/sandbox";
@@ -228,7 +229,7 @@ async function saveDesignSystem(db: SupabaseClient, projectId: string, settings:
   return fromRow(data);
 }
 
-function systemPrompt(opts: { templateBrief: string; designSystem: string; codebase: string | null; research: boolean; researchSources: number; threeD: boolean; cinematic: boolean; dataFiles: DataFile[] }) {
+function systemPrompt(opts: { templateBrief: string; designSystem: string; codebase: string | null; research: boolean; researchSources: number; threeD: boolean; physics: boolean; cinematic: boolean; dataFiles: DataFile[] }) {
   return `You are the design agent in Vellum, a design tool where people describe what they want and you make it on a live canvas. You work like a senior product designer who writes production-quality HTML, CSS and JavaScript.
 
 ## Files
@@ -269,7 +270,7 @@ function systemPrompt(opts: { templateBrief: string; designSystem: string; codeb
 Expose 2–5 meaningful live controls when they'd help the user explore (accent color, density, speed, which screen to show, a layout variant). Declare them in the file as:
 <script type="application/json" id="tweaks">[{"name":"accent","label":"Accent","type":"color","value":"#d9774f"},{"name":"speed","type":"range","min":200,"max":2000,"step":50,"value":700,"unit":"ms"},{"name":"startScreen","type":"select","options":["home","detail"],"value":"home"},{"name":"grid","type":"toggle","value":false}]</script>
 The canvas applies every value as a CSS custom property on :root (--accent, --speed with its unit, --grid as 1/0), as an attribute on <html> (data-start-screen="detail"; camelCase names become kebab-case), and fires window.addEventListener("tweak", e => e.detail.name / e.detail.value) on load and on every change. Use var(--name) in CSS or the event in JS.
-${opts.threeD ? `\n${babylonGuide()}\n` : ""}${opts.cinematic ? `\n${cinematicGuide()}\n` : ""}${opts.research ? `\n${researchGuide(opts.researchSources)}\n` : "\n## Facts\nDraft first. Write the design straight away from what you know; use web_search / web_fetch only for a specific real-world fact you'd otherwise get wrong, and cite it as [S3]. Most design work needs no search at all, and each turn allows at most 6 searches and fetches.\n"}${
+${opts.threeD ? `\n${babylonGuide()}\n${opts.physics ? `\n${physicsGuide()}\n` : ""}` : ""}${opts.cinematic ? `\n${cinematicGuide()}\n` : ""}${opts.research ? `\n${researchGuide(opts.researchSources)}\n` : "\n## Facts\nDraft first. Write the design straight away from what you know; use web_search / web_fetch only for a specific real-world fact you'd otherwise get wrong, and cite it as [S3]. Most design work needs no search at all, and each turn allows at most 6 searches and fetches.\n"}${
     opts.dataFiles.length
       ? `\n## Data files\nAttached: ${opts.dataFiles.map((f) => `"${f.name}"`).join(", ")}. Don't guess at their contents or eyeball numbers from a paraphrase — call run_code (real Python, pandas/openpyxl preinstalled) to actually read them, at /tmp/data/<name>, and compute real results: matched/unmatched rows, totals, variances, whatever the request needs. Print a JSON summary to stdout and use those exact numbers in the design — never invent or round a number run_code didn't produce. A reconciliation or data-comparison result is a dashboard the same way a research report is (see Design quality): a stat-tile row of the headline counts, a verdict panel, and the mismatches themselves in a real table, not a wall of prose. Treat run_code like web_search: use it to get the numbers, then build.\n`
       : ""
@@ -593,6 +594,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             research: needsResearch,
             researchSources: sources.turnLimit,
             threeD: is3DRequest(template.id, String(newest?.content ?? project.goal ?? "")),
+            physics: wantsPhysics(`${project.goal ?? ""} ${newest?.content ?? ""}`),
             cinematic: isCinematicRequest(template.id, String(newest?.content ?? project.goal ?? "")),
             dataFiles,
           }) + (summary ? `\n\n## Earlier in this conversation (summarized)\n${summary}` : ""),

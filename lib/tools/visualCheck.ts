@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { chat, type ContentPart, type ModelKey } from "@/lib/gateway";
 import { BUCKET } from "@/lib/tools/files";
 import type { Page } from "playwright-core";
-import { launchBrowser, openDesign, tmpFreeMb } from "@/lib/tools/browser";
+import { isServerless, launchBrowser, openDesign, tmpFreeMb } from "@/lib/tools/browser";
 
 const WIDTH = 1280;
 const TILE = 1100;
@@ -539,6 +539,9 @@ export function declaredPages(html: string): [number, number] | null {
 
 export const isPrintable = (html: string) => /@page\b/i.test(html);
 
+/** Scenes that need a real GPU to render properly: WebGPU, or WASM physics running a heavy simulation. */
+export const needsRealGpu = (html: string) => /navigator\.gpu|WebGPUEngine|HavokPhysics|rapier3d|RAPIER\.init/i.test(html);
+
 // Chromium writes each page as its own "/Type /Page" object.
 const countPdfPages = (pdf: Buffer) => (pdf.toString("latin1").match(/\/Type\s*\/Page(?![s\w])/g) ?? []).length;
 
@@ -730,6 +733,18 @@ export async function checkDesign(
   html: string,
   opts: { deadline: number; signal?: AbortSignal; request?: string; printPages?: [number, number] | null; renderTimeoutMs?: number; reportStyle?: boolean }
 ): Promise<CheckResult> {
+  // There's no GPU on the server, so WebGPU and heavy physics scenes aren't rendered there at all: software rendering
+  // would take minutes and crash the browser. They're checked only when Vellum runs locally on a machine with a GPU.
+  if (isServerless() && needsRealGpu(html) && process.env.VELLUM_HEAVY_CHECK !== "1") {
+    return {
+      automated: { jsErrors: [], horizontalOverflow: { desktop: 0, mobile: 0 }, brokenImages: 0, lowContrast: [], clippedText: [], emptyPage: false, height: 0 },
+      issues: [],
+      overall:
+        "This is a WebGPU / physics scene, which the server can't render (it has no GPU), so the visual check was skipped. It runs on each visitor's own GPU. Don't change the file because of this; reply and finish.",
+      reviewer: null,
+      screenshotUrl: null,
+    };
+  }
   // Rendering is capped: a browser that can't start or a page that never settles must not stall the turn.
   // The check step has its own invocation, so it can allow heavy pages (software WebGL) more time.
   const renderCap = Math.min(opts.renderTimeoutMs ?? RENDER_TIMEOUT_MS, Math.max(10_000, opts.deadline - Date.now() - 25_000));

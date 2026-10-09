@@ -11,6 +11,7 @@
  * either engine.
  */
 import { HDRIS, MODEL_LIBRARY, is3DRequest } from "@/lib/threeD";
+import { filmLookGuide } from "@/lib/babylonFilm";
 
 export { HDRIS, MODEL_LIBRARY, is3DRequest };
 
@@ -30,7 +31,8 @@ Setup: import Babylon from the CDN as ES modules (no build step, one <script typ
 \`\`\`
 <script type="importmap">{"imports":{"@babylonjs/core":"${BABYLON_CDN}/+esm","@babylonjs/loaders":"https://cdn.jsdelivr.net/npm/@babylonjs/loaders@${BABYLON_VERSION}/+esm"}}</script>
 \`\`\`
-\`const BABYLON = await import("@babylonjs/core"); const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true }); const scene = new BABYLON.Scene(engine);\` Real models first: if the request is (or contains) one of these, load it with SceneLoader instead of modelling it (\`await BABYLON.SceneLoader.ImportMeshAsync("", "", url, scene)\`, importing "@babylonjs/loaders" for glTF support), then light and present it well:
+\`const BABYLON = await import("@babylonjs/core"); let the engine boot below create the engine, then \`const scene = new BABYLON.Scene(engine);\` ${filmLookGuide()}
+Real models first: if the request is (or contains) one of these, load it with SceneLoader instead of modelling it (\`await BABYLON.SceneLoader.ImportMeshAsync("", "", url, scene)\`, importing "@babylonjs/loaders" for glTF support), then light and present it well:
 ${MODEL_LIBRARY.map((m) => `- ${m.name} (${m.what}): ${m.url}`).join("\n")}
 Beyond that fixed list, generate_3d_model produces a real mesh from any text description (a genuinely new model, not a lookup), for an organic or intricately detailed one-piece object that would be impractical to build from primitives and CSG (a creature, a piece of fruit, an ornate sculpted object). It returns a .glb URL to load the same way. It's for a single cohesive object, not for anything the request needs separate, labelled or arrangeable parts for; build those by hand instead so each part is its own named mesh.
 

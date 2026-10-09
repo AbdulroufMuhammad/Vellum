@@ -11,8 +11,15 @@ function allowedStorageHost() {
   }
 }
 
-// There's no GPU on the server: 3D designs (three.js) render with software WebGL, which newer Chromium only allows with this flag.
-const WEBGL_ARGS = ["--enable-unsafe-swiftshader", "--use-angle=swiftshader"];
+/** True on Vercel / Lambda, where there's no GPU and heavy 3D can't be rendered for the automatic check. */
+export const isServerless = () => !!(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+
+// There's no GPU on the server: 3D designs render with software WebGL, which newer Chromium only allows with this flag.
+// Running locally with VELLUM_GPU=1 uses the machine's real GPU instead (WebGPU needs it), so the check can photograph
+// WebGPU and physics-heavy scenes.
+const SOFTWARE_GL_ARGS = ["--enable-unsafe-swiftshader", "--use-angle=swiftshader"];
+const REAL_GPU_ARGS = ["--enable-unsafe-webgpu", "--enable-features=Vulkan,WebGPU", "--ignore-gpu-blocklist", "--enable-gpu-rasterization"];
+const WEBGL_ARGS = process.env.VELLUM_GPU === "1" && !isServerless() ? REAL_GPU_ARGS : SOFTWARE_GL_ARGS;
 
 // Browsers this process has open right now; with none open, any browser process of ours still alive is a leftover.
 let openBrowsers = 0;

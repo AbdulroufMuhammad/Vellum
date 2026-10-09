@@ -130,6 +130,18 @@ read-only file, render and export endpoints they use).
   doesn't, the tokens are read from the spec file's CSS variables and fonts
   (`lib/extractDesignSystem.ts`). Later revisions of that spec update the same
   saved system instead of adding copies.
+- **WebGPU film look and physics** (`lib/babylonFilm.ts`) — 3D scenes boot a
+  `WebGPUEngine` when the visitor has a GPU adapter and fall back to WebGL
+  silently, so the heavy rendering runs on the visitor's own machine, not a
+  server. Every scene gets the same film look (HDRI + shadowed key light, bloom,
+  ACES tone mapping, contact AO on WebGL, PBR materials with clear coat,
+  subsurface and refraction). Requests involving motion get a **Havok**
+  physics recipe: bouncing with real restitution, grab-and-throw, parts that
+  stay locked until pulled hard enough and then detach (a skull's teeth),
+  piles and reset. All snippets were run in headless Chromium against the CDN
+  builds before being written down. The server-side visual check can't render
+  WebGPU or physics scenes (no GPU on Vercel), so it skips them there; run
+  locally with `VELLUM_GPU=1` and a GPU to have the check photograph them.
 - **Realistic 3D** — 3D requests get a playbook: plan real dimensions and a
   parts list with what each part attaches to; build in a hierarchy with lathe,
   bevelled extrusions, tubes between real anchor points and instanced repeats;
