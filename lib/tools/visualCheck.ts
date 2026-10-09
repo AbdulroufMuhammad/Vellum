@@ -793,7 +793,6 @@ export async function checkDesign(
         messages: [{ role: "user", content }],
         deadline: Math.min(opts.deadline - 5_000, Date.now() + REVIEW_TIMEOUT_MS),
         signal: opts.signal,
-        noFallback: true,
         // A review needs a short answer, not pages of deliberation; this keeps the reasoning model fast.
         maxTokens: 1500,
         extra: model === "omni" ? { reasoning_budget: 768 } : undefined,

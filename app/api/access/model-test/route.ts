@@ -24,7 +24,6 @@ export async function GET(req: Request) {
     const r = await chat(model, {
       messages: [{ role: "user", content: params.get("prompt") ?? "Reply with exactly one word: ready" }],
       deadline: Date.now() + 100_000,
-      noFallback: true,
       maxTokens: 400,
       extra,
     });

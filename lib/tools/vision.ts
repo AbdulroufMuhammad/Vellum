@@ -41,7 +41,6 @@ export async function describeImage(
         messages: [{ role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: dataUrl } }] }],
         deadline: Math.min(opts.deadline, Date.now() + 75_000),
         signal: opts.signal,
-        noFallback: true,
       });
       const text = (r.content.trim() || r.reasoning.trim()).slice(0, 4000);
       if (text) return text;

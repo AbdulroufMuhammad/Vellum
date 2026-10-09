@@ -67,29 +67,7 @@ export function modelKeyFor(stored: string | null | undefined): ModelKey {
   return stored === "fast" ? "glm-flash" : "glm";
 }
 
-/** Models to try, in order, when one fails before streaming anything. Same-provider options come first. */
-export const FALLBACKS: Record<ModelKey, ModelKey[]> = {
-  glm: ["glm-flash", "deepseek"],
-  "glm-flash": ["glm", "deepseek"],
-  deepseek: ["glm-flash", "glm"],
-  omni: ["glm-flash", "glm"],
-  muse: ["glm-flash", "glm"],
-  "gpt-oss": ["glm-flash", "glm"],
-  kimi: ["glm-flash", "glm"],
-  "mistral-nemotron": ["glm-flash", "glm"],
-  "nemotron-super": ["glm-flash", "glm"],
-  "nemotron-lightning": ["glm-flash", "glm"],
-  "nemotron-ultra": ["glm-flash", "glm"],
-  gemma: ["glm-flash", "glm"],
-  "deepseek-v4": ["glm-flash", "glm"],
-  "llama-vision": ["glm-flash", "glm"],
-};
-
 const KEY_ENV = { nvidia: "NVIDIA_API_KEY", deepseek: "DEEPSEEK_API_KEY" } as const;
-// A provider that rejected its key is skipped for a while instead of costing every call a failed round trip.
-const badKeyUntil = new Map<ModelConfig["provider"], number>();
-const BAD_KEY_MS = 10 * 60_000;
-const keyOk = (k: ModelKey) => (badKeyUntil.get(MODELS[k].provider) ?? 0) < Date.now();
 
 export type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 
@@ -120,11 +98,9 @@ export type ChatOpts = {
   onToken?: (t: string) => void;
   onReasoning?: (t: string) => void;
   onToolDelta?: (index: number, name: string, args: string) => void;
-  /** Absolute epoch ms; the whole call (including a fallback attempt) is cut off here. */
+  /** Absolute epoch ms; the whole call is cut off here. */
   deadline: number;
   signal?: AbortSignal;
-  /** Don't retry on the registry's backup model (e.g. image input, which the text fallbacks can't read). */
-  noFallback?: boolean;
   /** Per-call overrides, e.g. a small token/reasoning budget for quick reviews. */
   maxTokens?: number;
   extra?: Record<string, unknown>;
@@ -297,44 +273,26 @@ async function chatOnce(modelKey: ModelKey, opts: ChatOpts, onFirstByte: () => v
 }
 
 /**
- * Chat with a one-shot fallback to the registry's backup model when the
- * primary provider fails before sending anything (auth error, rate limit,
- * 5xx, or silence). Once tokens have streamed to the user, a failure is
- * surfaced instead of silently restarting on another model.
+ * Chat with the requested model, and only that model: a failure is surfaced as-is rather than silently
+ * retried on a different one, so what runs is always what the user picked. The one retry is for a collapsed
+ * (degenerate) stream, which is worthless even if it already streamed, so the same model gets one more go.
  */
 export async function chat(modelKey: ModelKey, opts: ChatOpts): Promise<ChatResult> {
-  const chain = [modelKey, ...(opts.noFallback ? [] : FALLBACKS[modelKey])];
-  const candidates = chain.filter(keyOk);
-  if (!candidates.length) candidates.push(modelKey);
-  let lastError: unknown;
-  const retried = new Set<ModelKey>();
-  for (let i = 0; i < candidates.length; i++) {
-    const key = candidates[i];
-    if (lastError && opts.deadline - Date.now() < 5000) break;
-    let streamed = false;
+  let retried = false;
+  for (;;) {
     try {
-      return await chatOnce(key, opts, () => (streamed = true));
+      return await chatOnce(modelKey, opts, () => {});
     } catch (e) {
-      lastError = e;
-      // A collapsed stream is worthless even if it already streamed: try the model once more (it's random), then
-      // the next fallback (unless fallbacks are off).
-      if (e instanceof DegenerateOutput && !opts.signal?.aborted) {
-        console.log(`[gateway] ${MODELS[key].id}: ${e.message}${retried.has(key) ? "" : "; retrying once"}`);
-        if (!retried.has(key)) {
-          retried.add(key);
-          i--;
-        }
+      if (e instanceof DegenerateOutput && !retried && !opts.signal?.aborted) {
+        console.log(`[gateway] ${MODELS[modelKey].id}: ${e.message}; retrying once`);
+        retried = true;
         continue;
       }
-      if (e instanceof GatewayError && (e.status === 401 || e.status === 403)) badKeyUntil.set(MODELS[key].provider, Date.now() + BAD_KEY_MS);
-      const timedOut = (e as any)?.name === "TimeoutError";
-      const retryable = timedOut || (e instanceof GatewayError && (e.status === 401 || e.status === 403 || e.status === 404 || e.status === 429 || e.status >= 500));
-      if (streamed || opts.signal?.aborted || !retryable) break;
+      if (e instanceof GatewayError && (e.status === 401 || e.status === 403)) {
+        const provider = MODELS[modelKey].provider;
+        throw new Error(`The ${provider === "nvidia" ? "NVIDIA" : "DeepSeek"} API rejected its key (used for ${MODELS[modelKey].label}). Check ${KEY_ENV[provider]} in your deployment's environment variables.`);
+      }
+      throw e;
     }
   }
-  if (lastError instanceof GatewayError && (lastError.status === 401 || lastError.status === 403)) {
-    const provider = MODELS[candidates[candidates.length - 1]].provider;
-    throw new Error(`The ${provider === "nvidia" ? "NVIDIA" : "DeepSeek"} API rejected its key. Check ${KEY_ENV[provider]} in your deployment's environment variables.`);
-  }
-  throw lastError;
 }

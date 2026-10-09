@@ -223,8 +223,8 @@ read-only file, render and export endpoints they use).
   top (fonts, sizes, colors, bold/italic, bullets, speaker notes); "exact look"
   exports each slide as one picture instead.
 - **Long chats** — the last 12 messages go to the model verbatim; older ones as
-  a cached summary. Each turn has a research allowance, and models fall back
-  GLM → GLM Flash → DeepSeek, skipping a provider whose key was rejected.
+  a cached summary. Each turn has a research allowance. A request only ever
+  uses the model picked; there is no fallback to another model.
 - **Canvas** (`components/project/Canvas.tsx`, `lib/canvasBridge.ts`) — designs
   run in an iframe sandboxed without `allow-same-origin`; a small injected
   bridge handles Comment mode (click anything → comment goes to the agent with
@@ -237,8 +237,8 @@ read-only file, render and export endpoints they use).
 - **Versions** — every write is a new immutable version in Storage; the file
   menu lists versions to preview or restore.
 - **Model gateway** (`lib/gateway.ts`) — streaming client with a model
-  registry, an idle (not total) timeout so long files can finish, and a
-  one-shot fallback to a second provider.
+  registry, an idle (not total) timeout so long files can finish. A failing model
+  reports its own error rather than being swapped for another.
 - **Time limits** — a turn that nears the function's time budget pauses and
   the client resumes it automatically in a fresh invocation.
 
