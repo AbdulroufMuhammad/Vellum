@@ -16,6 +16,7 @@ import { planPreviewHtml, planningPlaceholderHtml } from "@/lib/planPreview";
 import { is3DRequest } from "@/lib/threeD";
 import { babylonGuide } from "@/lib/babylon3D";
 import { physicsGuide, softBodyGuide, wantsPhysics, wantsSoftBody } from "@/lib/babylonFilm";
+import { missingCallNudge, replyWithoutCode, salvageToolCall } from "@/lib/salvage";
 import { isCinematicRequest, cinematicGuide } from "@/lib/cinematic";
 import { wantsResearch, researchGuide, SKILL_RESEARCH_SOURCES } from "@/lib/research-skill";
 import { CodeSandbox, RUN_CODE_SCHEMA, type DataFile } from "@/lib/tools/sandbox";
@@ -706,6 +707,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     let badCalls = 0;
     let thinkCuts = 0;
     let stallCuts = 0;
+    let missingNudges = 0;
     let status: "ready" | "paused" = "ready";
     // The write_file call being streamed, so a turn cut off by the time limit can hand its partial file to the next round.
     let writing: { path: string; args: string } | null = null;
@@ -974,6 +976,25 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
         const thought = r.reasoning.trim();
         if (thought) await emit({ type: "thought", payload: { text: thought.length > 12000 ? "…" + thought.slice(-12000) : thought, ms: Date.now() - stepStart } });
 
+        // A model that wrote the plan or the whole page into the chat instead of calling the tool would otherwise end the request
+        // with code in the chat and nothing saved. Recover the call it meant to make; failing that, tell it to make the call.
+        if (!r.toolCalls.length && !mustAsk) {
+          const ctx = { phase: phase ?? (active ? "edit" : undefined), hasPlan: !!settings.plan, wroteFile: touched.size > 0 };
+          const fix = salvageToolCall(r.content.trim(), { ...ctx, filePath: cleanPath(settings.plan?.files?.[0] ?? `${project.title ?? "Design"}.html`) });
+          if (fix) {
+            await emit({ type: "note", payload: { text: fix.why } });
+            r.toolCalls = [{ id: `salvaged-${step}`, name: fix.name, args: JSON.stringify(fix.args) }];
+            r.content = "";
+          } else {
+            const nudge = missingNudges < 2 ? missingCallNudge(ctx) : null;
+            if (nudge) {
+              missingNudges++;
+              convo.push({ role: "assistant", content: r.content.trim().slice(0, 3000) || "…" });
+              convo.push({ role: "user", content: nudge });
+              continue;
+            }
+          }
+        }
         const text = r.content.trim();
         if (!r.toolCalls.length) {
           // Never hand back unverified work: check the last written file in a real browser and send real problems back to the model.
@@ -995,7 +1016,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             settings.phase = "check";
             settings.phaseFresh = true;
             settings.pendingCheck = unchecked;
-            settings.buildReply = removeEmDashes(text).slice(0, 600);
+            settings.buildReply = removeEmDashes(replyWithoutCode(text, true)).slice(0, 600);
             await db.from("projects").update({ settings }).eq("id", projectId);
             status = "paused";
             await emit({ type: "continue", payload: {} });
@@ -1059,7 +1080,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
           if (!checkNote && unchecked && /\.html?$/i.test(unchecked)) checkNote = `The final version of "${unchecked}" hasn't been through the browser check yet (this step ran out of time).`;
           const specFile = dsSpecFile();
           if (specFile) await autoSaveDesignSystem(specFile);
-          const reply = text || (touched.size ? "Done. It's on the canvas." : "I couldn't produce anything for that. Try rephrasing?");
+          const reply = replyWithoutCode(text, touched.size > 0) || (touched.size ? "Done. It's on the canvas." : "I couldn't produce anything for that. Try rephrasing?");
           await finish(checkNote ? `${reply}\n\n${checkNote}` : reply);
           break;
         }

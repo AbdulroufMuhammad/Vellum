@@ -1,0 +1,191 @@
+/**
+ * Runs the real agent loop (lib/agent.ts runTurn) locally, with no network and no real database: an in-memory stand-in for
+ * Supabase, and a fake OpenAI-style model server that behaves the way real models were seen to misbehave.
+ *
+ *   npx tsx scripts/simulate-turn.ts [scenario]
+ *
+ * Scenarios:
+ *   good          the model calls submit_plan and write_file properly
+ *   dumps-text    the model writes the plan, then the whole page, into the chat instead of calling the tools
+ *   dumps-forever the model pastes the plan and page as chat text every time, even when nudged (recovered each time)
+ *   prose-only    the model only ever answers in prose, never a tool call or code (the nudges must give up cleanly, no loop)
+ *   thinks-long   the model reasons for a long time in the plan step before calling submit_plan
+ *
+ * The check step really renders the page in headless Chromium (set CHROMIUM_PATH to a Chromium binary).
+ */
+import http from "node:http";
+import { randomUUID } from "node:crypto";
+
+const scenario = process.argv[2] ?? "dumps-text";
+const PORT = 8790 + Math.floor(Math.random() * 100);
+
+// ───────────── in-memory Supabase ─────────────
+type Row = Record<string, any>;
+const tables: Record<string, Row[]> = { projects: [], messages: [], events: [], files: [], sources: [], design_systems: [] };
+const storage = new Map<string, string>();
+
+class Query implements PromiseLike<{ data: any; error: any }> {
+  private op: "select" | "insert" | "update" | "upsert" | "delete" = "select";
+  private filters: ((r: Row) => boolean)[] = [];
+  private orders: { col: string; asc: boolean }[] = [];
+  private lim = Infinity;
+  private payload: any = null;
+  private returning = true;
+  private mode: "many" | "single" | "maybe" = "many";
+  constructor(private table: string) {}
+  select() { if (this.op === "select") this.returning = true; return this; }
+  insert(p: any) { this.op = "insert"; this.payload = p; return this; }
+  update(p: any) { this.op = "update"; this.payload = p; return this; }
+  upsert(p: any) { this.op = "upsert"; this.payload = p; return this; }
+  delete() { this.op = "delete"; return this; }
+  eq(c: string, v: any) { this.filters.push((r) => r[c] === v); return this; }
+  in(c: string, vs: any[]) { this.filters.push((r) => vs.includes(r[c])); return this; }
+  order(c: string, o?: { ascending?: boolean }) { this.orders.push({ col: c, asc: o?.ascending !== false }); return this; }
+  limit(n: number) { this.lim = n; return this; }
+  single() { this.mode = "single"; return this; }
+  maybeSingle() { this.mode = "maybe"; return this; }
+  then<T1, T2>(ok?: (v: { data: any; error: any }) => T1 | PromiseLike<T1>, bad?: (e: any) => T2 | PromiseLike<T2>) { return Promise.resolve(this.run()).then(ok, bad); }
+  private run() {
+    const rows = tables[this.table];
+    const matches = () => rows.filter((r) => this.filters.every((f) => f(r)));
+    let out: Row[] = [];
+    if (this.op === "insert" || this.op === "upsert") {
+      for (const p of Array.isArray(this.payload) ? this.payload : [this.payload]) {
+        const row = { id: randomUUID(), created_at: new Date().toISOString(), ...p };
+        const dupe = this.op === "upsert" && rows.find((r) => (r.id && r.id === row.id) || (r.project_id && r.short_id && r.project_id === row.project_id && r.short_id === row.short_id));
+        if (dupe) Object.assign(dupe, p);
+        else rows.push(row);
+        out.push(dupe ?? row);
+      }
+    } else if (this.op === "update") {
+      out = matches();
+      for (const r of out) Object.assign(r, this.payload);
+    } else if (this.op === "delete") {
+      out = matches();
+      tables[this.table] = rows.filter((r) => !out.includes(r));
+    } else out = matches();
+    for (const { col, asc } of [...this.orders].reverse()) out = [...out].sort((a, b) => (a[col] > b[col] ? 1 : a[col] < b[col] ? -1 : 0) * (asc ? 1 : -1));
+    if (this.lim !== Infinity) out = out.slice(0, this.lim);
+    const clone = JSON.parse(JSON.stringify(out));
+    if (this.mode === "single") return { data: clone[0] ?? null, error: clone[0] ? null : { message: "no row" } };
+    if (this.mode === "maybe") return { data: clone[0] ?? null, error: null };
+    return { data: clone, error: null };
+  }
+}
+const fakeDb: any = {
+  from: (t: string) => new Query(t),
+  storage: {
+    from: () => ({
+      upload: async (key: string, blob: Blob | string) => { storage.set(key, typeof blob === "string" ? blob : await blob.text()); return { data: { path: key }, error: null }; },
+      download: async (key: string) => (storage.has(key) ? { data: new Blob([storage.get(key)!]), error: null } : { data: null, error: { message: "not found" } }),
+      getPublicUrl: (key: string) => ({ data: { publicUrl: `http://fake.local/${key}` } }),
+    }),
+  },
+};
+
+// ───────────── fake model server ─────────────
+const planObj = {
+  title: "Superbio Invoice Demo", summary: "A single-page printable invoice for Superbio.", direction: "Classical: serif type, restrained, gold accent #b68235 on warm white.",
+  sections: [{ name: "Header", detail: "Superbio Studio, address, invoice SB-2047" }, { name: "Items", detail: "Five rows with quantity, rate and amount" }, { name: "Totals", detail: "Subtotal, tax, deposit, balance due" }],
+  files: ["Superbio Invoice Demo.html"], notes: "One page, @page A4.",
+};
+const pageHtml = `<!doctype html><html><head><meta charset="utf-8"><title>Superbio Invoice</title><style>body{font:15px/1.5 Georgia,serif;margin:0;padding:32px;background:#fbf9f4;color:#1f1b16}h1{font-size:28px;margin:0 0 4px}table{width:100%;border-collapse:collapse;margin-top:24px}td,th{padding:10px 6px;border-bottom:1px solid #d9d2c3;text-align:left}.n{text-align:right}.due{margin-top:24px;padding:16px;border:1px solid #b68235;background:#f4ead4;display:flex;justify-content:space-between;font-size:20px}</style></head><body><h1>Superbio Studio</h1><p>418 Meridian Lane, Portland, OR 97209 · Invoice SB-2047 · Issued 9 Oct 2026 · Due 8 Nov 2026</p><table><thead><tr><th>Description</th><th class="n">Qty</th><th class="n">Rate</th><th class="n">Amount</th></tr></thead><tbody><tr><td>Brand identity refinement</td><td class="n">1</td><td class="n">$4,780.00</td><td class="n">$4,780.00</td></tr><tr><td>Compostable pouch dieline</td><td class="n">3</td><td class="n">$950.00</td><td class="n">$2,850.00</td></tr><tr><td>Label artwork per SKU</td><td class="n">4</td><td class="n">$420.00</td><td class="n">$1,680.00</td></tr></tbody></table><div class="due"><span>Balance due</span><strong>$7,310.00</strong></div><p>${"Payment is due within thirty days of the issue date by bank transfer, card or check. ".repeat(6)}</p></body></html>`;
+
+const requests: { kind: string; reply: string }[] = [];
+function sse(res: http.ServerResponse, chunks: any[]) {
+  res.writeHead(200, { "Content-Type": "text/event-stream" });
+  for (const c of chunks) res.write(`data: ${JSON.stringify({ choices: [{ delta: c, finish_reason: null }] })}\n\n`);
+  res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 10 } })}\n\ndata: [DONE]\n\n`);
+  res.end();
+}
+const toolCall = (name: string, args: object) => [{ tool_calls: [{ index: 0, id: "call_" + randomUUID().slice(0, 8), type: "function", function: { name, arguments: JSON.stringify(args) } }] }];
+const modelServer = http.createServer((req, res) => {
+  let b = ""; req.on("data", (c) => (b += c));
+  req.on("end", async () => {
+    const body = JSON.parse(b);
+    const msgs: any[] = body.messages ?? [];
+    const text = msgs.map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
+    const last = String(msgs[msgs.length - 1]?.content ?? "");
+    const toolNames: string[] = (body.tools ?? []).map((t: any) => t.function.name);
+    const reply = (kind: string, chunks: any[], note = "") => { requests.push({ kind, reply: note }); sse(res, chunks); };
+    // reviewer (screenshots, no tools)
+    if (!toolNames.length) return reply("review", [{ content: JSON.stringify({ issues: [], overall: "Looks good." }) }], "json review");
+    const planning = text.includes("## This step: planning");
+    const building = text.includes("## This step: building");
+    const checking = text.includes("## This step: checking") || text.includes("An automatic check");
+    const nudged = /You answered in text|Stop thinking and write|You've thought enough/.test(last);
+    if (scenario === "prose-only") return reply("prose", [{ content: "Sure, I will design a classic invoice with a serif look and a gold accent, and it will print on one page." }], "prose only");
+    if (planning) {
+      if (scenario === "thinks-long" && !nudged) { await new Promise((r) => setTimeout(r, 3500)); }
+      if ((scenario === "dumps-text" || scenario === "dumps-forever") && (scenario === "dumps-forever" || !nudged))
+        return reply("plan", [{ content: "**Planning**  \nI'll build a clean printable invoice.\n\n**submit_plan**  \n```json\n" + JSON.stringify(planObj, null, 2) + "\n```" }], "plan as chat text");
+      return reply("plan", toolCall("submit_plan", planObj), "submit_plan tool call");
+    }
+    const afterTool = msgs[msgs.length - 1]?.role === "tool";
+    if (building && afterTool) {
+      // after saving the file, a careless model pastes it again in its final answer
+      if (scenario === "dumps-text") return reply("build-done", [{ content: "I saved it. Here is the code again:\n```html\n" + pageHtml + "\n```" }], "page pasted again after saving");
+      return reply("build-done", [{ content: "Built the invoice." }], "done");
+    }
+    if (building && !toolNames.includes("check_design")) {
+      if (scenario === "dumps-text" || scenario === "dumps-forever") return reply("build", [{ content: "Here is the invoice:\n\n```html\n" + pageHtml + "\n```\n\nLet me know if you want changes." }], "page as chat text");
+      return reply("build", toolCall("write_file", { path: "Superbio Invoice Demo.html", content: pageHtml }), "write_file tool call");
+    }
+    if (building && /Superbio Invoice Demo/.test(text) && /write_file|append_file/.test(text)) return reply("build-done", [{ content: "Built the invoice." }], "done");
+    void checking;
+    return reply("other", [{ content: "Looks good. The invoice is on the canvas." }], "short reply");
+  });
+});
+
+// ───────────── drive the real agent ─────────────
+async function main() {
+  await new Promise<void>((r) => modelServer.listen(PORT, r));
+  process.env.NVIDIA_BASE_URL = `http://localhost:${PORT}`; process.env.NVIDIA_API_KEY = "test";
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "http://fake.local"; process.env.SUPABASE_SERVICE_ROLE_KEY = "test";
+  process.env.CHROMIUM_PATH ??= "/opt/pw-browsers/chromium-1194/chrome-linux/chrome";
+  process.env.THINK_LIMIT_MS ??= "2000"; process.env.WRITER_THINK_MS ??= "2000"; process.env.PLAN_THINK_MS ??= "30000";
+  const { runTurn } = await import("../lib/agent");
+
+  const projectId = randomUUID();
+  tables.projects.push({ id: projectId, title: "Create an invoice demo for Superbio", template: "blank", model_profile: "glm", design_system_id: null, goal: "Create an invoice demo for Superbio", status: "idle", budget: { tokensLeft: 200000, searchesLeft: 40, rounds: 0, maxRounds: 3 }, settings: {}, codebase: null, run_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+  tables.messages.push({ id: randomUUID(), project_id: projectId, role: "user", content: "Create an invoice demo for Superbio", meta: {}, created_at: new Date(Date.now() - 2000).toISOString() });
+  tables.messages.push({ id: randomUUID(), project_id: projectId, role: "user", content: "How deep should this go?\n→ Standard", meta: { answers: { scope: "Standard" } }, created_at: new Date(Date.now() - 1000).toISOString() });
+
+  const t0 = Date.now();
+  const log: string[] = [];
+  let invocations = 0, resume = false;
+  for (; invocations < 8; invocations++) {
+    let sawContinue = false, sawError = false;
+    await runTurn(fakeDb, projectId, {
+      resume,
+      onEvent: (e) => {
+        if (e.type === "continue") sawContinue = true;
+        if (e.type === "error") { sawError = true; log.push(`  ! error: ${(e.payload as any).message}`); }
+        if (["phase", "note", "plan", "tool-call", "tool-result", "thought"].includes(e.type)) {
+          const p: any = e.payload;
+          log.push(`  ${e.type}${p?.name ? " " + p.name : ""}${p?.text ? ": " + String(p.text).slice(0, 90).replace(/\s+/g, " ") : ""}${p?.error ? " ERROR " + String(p.error).slice(0, 80) : ""}`);
+        }
+      },
+    });
+    log.push(`-- invocation ${invocations + 1} ended (${sawContinue ? "continue" : sawError ? "error" : "done"})`);
+    if (!sawContinue) break;
+    resume = true;
+  }
+
+  const files = tables.files.filter((f) => f.project_id === projectId);
+  const final = tables.messages.filter((m) => m.role === "assistant").pop();
+  console.log(`\n=== scenario: ${scenario} ===`);
+  console.log(log.join("\n"));
+  console.log(`\nmodel requests: ${requests.map((r) => r.kind).join(" > ")}`);
+  console.log(`files written: ${files.length ? files.map((f) => `${f.path} v${f.version} (${storage.get(f.storage_path)?.length ?? 0} chars)`).join(", ") : "NONE"}`);
+  console.log(`final chat reply: ${JSON.stringify((final?.content ?? "").slice(0, 140))}`);
+  console.log(`took ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+  const wrote = files.length > 0 && (storage.get(files[0].storage_path)?.length ?? 0) > 1000;
+  const chatHasCode = /```|<!doctype/i.test(final?.content ?? "");
+  modelServer.close();
+  const expectFile = scenario !== "prose-only";
+  const ok = expectFile ? wrote && !chatHasCode : !chatHasCode;
+  console.log(ok ? "RESULT: ok" : "RESULT: FAILED (" + (!wrote && expectFile ? "no file saved" : "code was left in the chat") + ")");
+  process.exit(ok ? 0 : 1);
+}
+main().catch((e) => { console.error(e); process.exit(2); });
