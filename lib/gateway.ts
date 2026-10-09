@@ -161,7 +161,7 @@ function requiredSetting(body: string): [string, number | boolean] | null {
   return [m[1], m[2] === "true" ? true : m[2] === "false" ? false : Number(m[2])];
 }
 
-async function chatOnce(modelKey: ModelKey, opts: ChatOpts, onFirstByte: () => void): Promise<ChatResult> {
+async function chatOnce(modelKey: ModelKey, opts: ChatOpts, onFirstByte: () => void, onAnswer: () => void = () => {}): Promise<ChatResult> {
   const m = MODELS[modelKey];
   const { url, key } = baseFor(m.provider);
   const ctrl = new AbortController();
@@ -253,6 +253,7 @@ async function chatOnce(modelKey: ModelKey, opts: ChatOpts, onFirstByte: () => v
           first = false;
           onFirstByte();
         }
+        if (d.content || d.tool_calls?.length) onAnswer();
         if (typeof thought === "string" && thought) {
           watch(thought);
           out.reasoning += thought;
@@ -298,14 +299,15 @@ async function chatOnce(modelKey: ModelKey, opts: ChatOpts, onFirstByte: () => v
 export async function chat(modelKey: ModelKey, opts: ChatOpts): Promise<ChatResult> {
   let retried = false, silentRetried = false;
   for (;;) {
-    let streamed = false;
+    let answered = false;
     try {
-      return await chatOnce(modelKey, opts, () => (streamed = true));
+      return await chatOnce(modelKey, opts, () => {}, () => (answered = true));
     } catch (e) {
-      // The endpoint never answered at all (a stalled or queued request, which is common on shared endpoints right after another
-      // call): ask the same model once more, without its thinking phase so the answer starts sooner. Nothing was streamed, so
-      // nothing is repeated, and if the turn's own deadline is what ran out there's no time left to retry.
-      if (e instanceof IdleTimeout && /stopped responding/.test(e.message) && !streamed && !silentRetried && !opts.signal?.aborted && opts.deadline - Date.now() > 25_000) {
+      // The endpoint went quiet before giving any answer or tool call (a stalled or queued request, common on shared endpoints right
+      // after another call; it may even have streamed some reasoning first): ask the same model once more, without its thinking phase
+      // so an answer starts sooner. Nothing the user could see as an answer is repeated, and if the turn's own deadline is what ran
+      // out there's no time left to retry.
+      if (e instanceof IdleTimeout && /stopped responding/.test(e.message) && !answered && !silentRetried && !opts.signal?.aborted && opts.deadline - Date.now() > 25_000) {
         console.log(`[gateway] ${MODELS[modelKey].id}: no response; retrying once`);
         silentRetried = true;
         opts = { ...opts, thinking: opts.thinking ?? "off" };
