@@ -34,6 +34,9 @@ const HEARTBEAT_MS = 10_000;
 // A step that has only been thinking this long (nothing written, no tool call) is stopped and told to act on its plan.
 // Reasoning models otherwise deliberate for the whole turn: GLM spent 270s planning a business card.
 const THINK_LIMIT_MS = Number(process.env.THINK_LIMIT_MS ?? 45_000);
+// Planning is where the thinking belongs, so it gets room to finish: a plan still needs its own time to be written after the thinking,
+// inside the same invocation. Cutting it earlier meant it was stopped at the moment it was about to write, then thought it all again.
+const PLAN_THINK_MS = Number(process.env.PLAN_THINK_MS ?? 130_000);
 // Once a request is being written (or has been cut off for deliberating), thinking is off and a pass that still reasons is cut much sooner.
 const WRITER_THINK_MS = Number(process.env.WRITER_THINK_MS ?? 12_000);
 
@@ -837,10 +840,10 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
         // was the plan. A request that was cut off for deliberating stays in that mode for the rest of it (settings.writer).
         const writerMode = !!settings.writer || phase === "build" || phase === "check";
         // Re-checked every second once past the limit: slow thinkers may not have written much yet when it's first reached.
-        const thinkLimit = writerMode ? WRITER_THINK_MS : THINK_LIMIT_MS * (phase === "plan" ? 4 / 3 : 1);
+        const thinkLimit = writerMode ? WRITER_THINK_MS : phase === "plan" ? PLAN_THINK_MS : THINK_LIMIT_MS;
         // A model that drafts the deliverable inside its reasoning (the whole HTML and CSS) burns the time budget and starts
         // over on the next invocation: that's cut at once, whatever the clock says.
-        const draftingInThought = () => stepReasoning.length > 2500 && /<!doctype html|<html[\s>]|<style[\s>]|```(?:html|css)\b/i.test(stepReasoning.slice(-6000));
+        const draftingInThought = () => phase !== "plan" && stepReasoning.length > 2500 && /<!doctype html|<html[\s>]|<style[\s>]|```(?:html|css)\b/i.test(stepReasoning.slice(-6000));
         const thinkTimer = setInterval(() => {
           if (acted) return;
           if ((Date.now() - stepStart > thinkLimit && stepReasoning.length > 200) || draftingInThought()) stepCtrl.abort(new ThinkLimit("thought too long without acting"));

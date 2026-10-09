@@ -197,8 +197,9 @@ read-only file, render and export endpoints they use).
   in the chat: **planning** (think, research, ask; hand in a plan with
   `submit_plan`, shown as a plan card), **building** (write the files from the
   plan) and **checking** (browser check first, then fixes and the reply).
-  Small follow-up edits run as one step. The plan step may think (60s, and a
-  model that starts drafting the file inside its reasoning is cut at once). The
+  Small follow-up edits run as one step. The plan step may think for up to 130s, then still has time to write the plan
+  (cutting it sooner stopped it at the moment it was about to write). In the build
+  and check steps a model that starts drafting the file inside its reasoning is cut at once. The
   build and check steps are a fresh pass of the **same** selected model with
   thinking switched off (the thinking was the plan): the file is written in
   parts of 4–6k characters (`write_file`, then `append_file`), so a time-limit
