@@ -1118,7 +1118,7 @@ export class SoftObject {
       const pts = loop.map((k) => crossing.get(k));
       const poly = new Float32Array(pts.length * 2);
       pts.forEach((c, i) => { const dx = c.p[0] - px, dy = c.p[1] - py, dz = c.p[2] - pz; poly[2 * i] = dx * ux + dy * uy + dz * uz; poly[2 * i + 1] = dx * vx + dy * vy + dz * vz; });
-      const fine = triangulateCap(poly, this.cell * 0.55), sgn = 1;   // delaunay returns CCW in (u, v), where u x v = n
+      const fine = triangulateCap(poly, this.cell * 0.36), sgn = 1;   // delaunay returns CCW in (u, v), where u x v = n
       const capTris = fine.tris;
       // 3D position of every cap point: the loop's own points exactly, interior points back from plane coordinates
       const p3 = fine.pts.map((q, i) => (i < pts.length ? pts[i].p : [px + ux * q[0] + vx * q[1], py + uy * q[0] + vy * q[1], pz + uz * q[0] + vz * q[1]]));

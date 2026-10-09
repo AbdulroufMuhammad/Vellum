@@ -33,8 +33,10 @@ check("does not drift sideways", Math.hypot(c[0], c[2]) < 0.15, `centroid (${c[0
 
 const miss = obj.cut(c[0] + 5, c[1], c[2], 1, 0, 0);
 check("a cut that misses is refused", miss.ok === false);
+const tc = Date.now();
 const res = obj.cut(c[0], c[1], c[2], 1, 0, 0);
 check("a cut makes two pieces", res.ok && obj.pieces === 2, `${obj.pieces} pieces`);
+check("a cut is fast enough not to hitch (under 250 ms)", Date.now() - tc < 250, `${Date.now() - tc} ms`);
 check("render indices are valid", [...obj.rIdx].every((i) => i < obj.rTet.length));
 check("cut faces exist", obj.rCap.reduce((a, b) => a + b, 0) > 100, `${obj.rCap.reduce((a, b) => a + b, 0)} cap vertices`);
 const res2 = obj.cut(obj.sb.centroid()[0] + 1.5, c[1], c[2], 1, 0, 0);
