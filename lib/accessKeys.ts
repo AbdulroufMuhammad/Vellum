@@ -123,6 +123,7 @@ export async function sessionFromCookie(value: string | undefined | null): Promi
 /** Paths open without a key: the key entry page, signing in and out, and view-only share links with what they load. */
 export function isPublicPath(pathname: string, method: string) {
   if (pathname === "/access" || pathname === "/api/access/login" || pathname === "/api/access/logout") return true;
+  if (pathname === "/api/health" && method === "GET") return true;
   if (/^\/p\/[^/]+\/?$/.test(pathname)) return true;
   if (method === "GET" && /^\/api\/projects\/[^/]+\/(export|file|render)\/?$/.test(pathname)) return true;
   return false;
