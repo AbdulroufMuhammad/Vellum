@@ -13,7 +13,8 @@
     "typecheck": "tsc --noEmit",
     "test:softbody": "node scripts/test-softbody.mjs",
     "test:salvage": "npx --yes tsx scripts/test-salvage.ts",
-    "simulate": "npx --yes tsx scripts/simulate-turn.ts"
+    "simulate": "npx --yes tsx scripts/simulate-turn.ts",
+    "test:writer": "npx --yes tsx scripts/test-writer.ts"
   },
   "dependencies": {
     "@sparticuz/chromium": "^153.0.0",

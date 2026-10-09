@@ -12,14 +12,20 @@
  *   edit-reasons  an existing invoice, then "Make the UI better"; every call reasons for REASON_MS (default 3s, longer than the
  *                 test's 2s think limits) before it acts, ignoring "thinking off", the way GLM 5.3 behaves. Must end with a new
  *                 version of the file, not an endless run of cuts.
+ *   thinks-then-writes  GLM's worst case: in the normal tool loop the model only ever reasons (never acts within any limit),
+ *                 but asked by the fresh writing session it writes the page. Covers a new build and an edit (EDIT_MESSAGE).
  *   thinks-long   the model reasons for a long time in the plan step before calling submit_plan
  *
  * The check step really renders the page in headless Chromium (set CHROMIUM_PATH to a Chromium binary).
+ *
+ * Real models: npx tsx scripts/simulate-turn.ts real   (needs NVIDIA_API_KEY; MODEL=glm by default, EDIT_MESSAGE for an edit,
+ * OUT_DIR to save the final page). The real agent loop and real model, only the database is the in-memory stand-in. Real limits.
  */
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 
 const scenario = process.argv[2] ?? "dumps-text";
+const real = scenario === "real";
 const PORT = 8790 + Math.floor(Math.random() * 100);
 
 // ───────────── in-memory Supabase ─────────────
@@ -125,12 +131,27 @@ const modelServer = http.createServer((req, res) => {
     const last = String(msgs[msgs.length - 1]?.content ?? "");
     const toolNames: string[] = (body.tools ?? []).map((t: any) => t.function.name);
     const reply = (kind: string, chunks: any[], note = "") => { requests.push({ kind, reply: note }); sse(res, chunks); };
+    // the fresh writing session: no tools, its own short system prompt, the page comes back as plain HTML
+    const writer = !toolNames.length && String(msgs[0]?.content ?? "").startsWith("You write one complete, self-contained HTML document");
+    if (writer) {
+      const better = pageHtml.replace("<h1>Superbio Studio</h1>", "<h1>Superbio Studio</h1><p class=\"tag\">Redesigned</p>");
+      requests.push({ kind: "writer", reply: `${JSON.stringify(body).length} chars in` });
+      if (scenario === "thinks-then-writes" || scenario === "edit-reasons") { await sseReasoning(res, 1000, [{ content: better }]); return; }
+      return sse(res, [{ content: better }]);
+    }
     // reviewer (screenshots, no tools)
     if (!toolNames.length) return reply("review", [{ content: JSON.stringify({ issues: [], overall: "Looks good." }) }], "json review");
     const planning = text.includes("## This step: planning");
     const building = text.includes("## This step: building");
     const checking = text.includes("## This step: checking") || text.includes("An automatic check");
     const nudged = /You answered in text|Stop thinking and write|You've thought enough/.test(last);
+    if (scenario === "thinks-then-writes") {
+      if (planning) return reply("plan", toolCall("submit_plan", { ...planObj, files: ["Invoice Demo.html"] }), "submit_plan tool call");
+      // building or editing inside the full conversation: it never stops reasoning
+      const finished = await sseReasoning(res, 60_000, [{ content: "…" }]);
+      requests.push({ kind: finished ? "reasoned" : "cut", reply: "" });
+      return;
+    }
     if (scenario === "edit-reasons") {
       const ms = Number(process.env.REASON_MS ?? 3000);
       const afterTool = msgs[msgs.length - 1]?.role === "tool";
@@ -167,20 +188,24 @@ const modelServer = http.createServer((req, res) => {
 
 // ───────────── drive the real agent ─────────────
 async function main() {
-  await new Promise<void>((r) => modelServer.listen(PORT, r));
-  process.env.NVIDIA_BASE_URL = `http://localhost:${PORT}`; process.env.NVIDIA_API_KEY = "test";
+  if (real) {
+    if (!process.env.NVIDIA_API_KEY) throw new Error("set NVIDIA_API_KEY to run against real models");
+  } else {
+    await new Promise<void>((r) => modelServer.listen(PORT, r));
+    process.env.NVIDIA_BASE_URL = `http://localhost:${PORT}`; process.env.NVIDIA_API_KEY = "test";
+  }
   process.env.NEXT_PUBLIC_SUPABASE_URL = "http://fake.local"; process.env.SUPABASE_SERVICE_ROLE_KEY = "test";
   process.env.CHROMIUM_PATH ??= "/opt/pw-browsers/chromium-1194/chrome-linux/chrome";
-  process.env.THINK_LIMIT_MS ??= "2000"; process.env.WRITER_THINK_MS ??= "2000"; process.env.PLAN_THINK_MS ??= "30000";
+  if (!real) { process.env.THINK_LIMIT_MS ??= "2000"; process.env.WRITER_THINK_MS ??= "2000"; process.env.PLAN_THINK_MS ??= "30000"; }
   // A short turn budget so a loop shows up in seconds rather than minutes (each invocation is one "turn").
-  if (scenario === "edit-reasons") process.env.TURN_BUDGET_MS ??= "45000";
+  if (scenario === "edit-reasons" || scenario === "thinks-then-writes") process.env.TURN_BUDGET_MS ??= process.env.EDIT_MESSAGE ? "130000" : "45000";
   const { runTurn } = await import("../lib/agent");
 
   const projectId = randomUUID();
-  tables.projects.push({ id: projectId, title: "Create an invoice demo for Superbio", template: "blank", model_profile: "glm", design_system_id: null, goal: "Create an invoice demo for Superbio", status: "idle", budget: { tokensLeft: 200000, searchesLeft: 40, rounds: 0, maxRounds: 3 }, settings: {}, codebase: null, run_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+  tables.projects.push({ id: projectId, title: "Create an invoice demo for Superbio", template: "blank", model_profile: process.env.MODEL ?? "glm", design_system_id: null, goal: "Create an invoice demo for Superbio", status: "idle", budget: { tokensLeft: 200000, searchesLeft: 40, rounds: 0, maxRounds: 3 }, settings: {}, codebase: null, run_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
   tables.messages.push({ id: randomUUID(), project_id: projectId, role: "user", content: "Create an invoice demo for Superbio", meta: {}, created_at: new Date(Date.now() - 2000).toISOString() });
   tables.messages.push({ id: randomUUID(), project_id: projectId, role: "user", content: "How deep should this go?\n→ Standard", meta: { answers: { scope: "Standard" } }, created_at: new Date(Date.now() - 1000).toISOString() });
-  if (scenario === "edit-reasons") {
+  if (scenario === "edit-reasons" || ((scenario === "thinks-then-writes" || real) && process.env.EDIT_MESSAGE)) {
     // The invoice already exists (v1); the user then asks for a redesign, as in the GLM project.
     storage.set(`${projectId}/v1.html`, pageHtml);
     tables.files.push({ id: randomUUID(), project_id: projectId, path: "Invoice Demo.html", version: 1, storage_path: `${projectId}/v1.html`, content_type: "text/html", created_at: new Date(Date.now() - 900).toISOString() });
@@ -191,13 +216,14 @@ async function main() {
   const t0 = Date.now();
   const log: string[] = [];
   let invocations = 0, resume = false;
-  const maxInvocations = scenario === "edit-reasons" ? 3 : 8;
+  const maxInvocations = scenario === "edit-reasons" || scenario === "thinks-then-writes" ? 3 : real ? 6 : 8;
   for (; invocations < maxInvocations; invocations++) {
     let sawContinue = false, sawError = false;
     await runTurn(fakeDb, projectId, {
       resume,
       onEvent: (e) => {
         if (e.type === "continue") sawContinue = true;
+        if (real) log.push(`  [${((Date.now() - t0) / 1000).toFixed(0)}s]`);
         if (e.type === "error") { sawError = true; log.push(`  ! error: ${(e.payload as any).message}`); }
         if (["phase", "note", "plan", "tool-call", "tool-result", "thought"].includes(e.type)) {
           const p: any = e.payload;
@@ -219,7 +245,17 @@ async function main() {
   console.log(`final chat reply: ${JSON.stringify((final?.content ?? "").slice(0, 140))}`);
   console.log(`took ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   const newest = [...files].sort((a, b) => b.version - a.version)[0];
-  const wrote = scenario === "edit-reasons" ? !!newest && newest.version >= 2 && /Redesigned/.test(storage.get(newest.storage_path) ?? "") : files.length > 0 && (storage.get(files[0].storage_path)?.length ?? 0) > 1000;
+  if (process.env.OUT_DIR && newest) {
+    const fs = await import("node:fs");
+    fs.writeFileSync(`${process.env.OUT_DIR}/${newest.path.replace(/[^\w.-]+/g, "_")}`, storage.get(newest.storage_path) ?? "");
+    for (const f of files) fs.writeFileSync(`${process.env.OUT_DIR}/v${f.version}-${f.path.replace(/[^\w.-]+/g, "_")}`, storage.get(f.storage_path) ?? "");
+  }
+  if (real) {
+    console.log(`final page: ${newest ? `${newest.path} v${newest.version}, ${(storage.get(newest.storage_path) ?? "").length} chars, ends with </html>: ${/<\/html>\s*$/i.test(storage.get(newest.storage_path) ?? "")}` : "NONE"}`);
+    process.exit(newest ? 0 : 1);
+  }
+  const isEdit = scenario === "edit-reasons" || (scenario === "thinks-then-writes" && !!process.env.EDIT_MESSAGE);
+  const wrote = scenario === "edit-reasons" || scenario === "thinks-then-writes" ? !!newest && newest.version >= (isEdit ? 2 : 1) && /Redesigned/.test(storage.get(newest.storage_path) ?? "") : files.length > 0 && (storage.get(files[0].storage_path)?.length ?? 0) > 1000;
   const chatHasCode = /```|<!doctype/i.test(final?.content ?? "");
   modelServer.close();
   const expectFile = scenario !== "prose-only";

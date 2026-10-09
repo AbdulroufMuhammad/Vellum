@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { chat, ignoresThinkingOff, modelKeyFor, MODELS, type ChatMessage, type ModelKey, type ToolSchema } from "@/lib/gateway";
+import { chat, ignoresThinkingOff, modelKeyFor, MODELS, type ChatMessage, type ChatResult, type ModelKey, type ToolSchema } from "@/lib/gateway";
+import { writeDocument } from "@/lib/writer";
 import { makeEmitter, type AgentEvent, type Emit } from "@/lib/events";
 import { FILE_TOOL_SCHEMAS, makeFileTools, cleanPath } from "@/lib/tools/files";
 import { SourceRegistry, WEB_TOOL_SCHEMAS } from "@/lib/tools/search";
@@ -733,6 +734,65 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
       const latest = [...recent].reverse().find((m) => m.role === "user" && !m.meta?.answers)?.content ?? "";
       return `${project.goal ?? ""}${latest && latest !== project.goal ? `\nLatest request: ${latest}` : ""}`;
     };
+    /**
+     * The thinking is done but the model is stuck before writing (cut for deliberating, or stalled): hand its notes to a fresh
+     * writing session of the same model, with a small context, that replies with the page as plain HTML. Saved like write_file,
+     * so the browser check runs as usual. Returns the step's result, or null if the session couldn't produce a page.
+     */
+    const writeFresh = async (notes: string): Promise<ChatResult | null> => {
+      const path = cleanPath(settings.plan?.files?.[0] ?? (phase ? undefined : active?.path) ?? active?.path ?? `${project.title ?? "Design"}.html`);
+      const exists = touched.has(path) || files.some((f) => f.path === path);
+      const current = exists ? await fileTools.read_file({ path }).then((f) => f.content, () => null) : null;
+      const request = String(newest?.content ?? project.goal ?? "");
+      // In the check step the job is fixing what the browser check found: the writer gets that list too.
+      const findings = [...convo].reverse().find((m) => m.role === "user" && typeof m.content === "string" && m.content.startsWith("An automatic check"));
+      const callId = `fresh-write-${Date.now()}`;
+      await emit({ type: "note", payload: { text: `Handing the notes to a fresh writing session of ${MODELS[currentModel].label}.` } });
+      await emit({ type: "tool-call", payload: { callId, name: "write_file", args: { path } } });
+      let sent = "", lastEmit = 0;
+      try {
+        const guides = [
+          is3DRequest(template.id, request) ? babylonGuide() : "",
+          wantsPhysics(`${project.goal ?? ""} ${request}`) ? physicsGuide() : "",
+          wantsSoftBody(`${project.goal ?? ""} ${request}`) ? softBodyGuide() : "",
+        ].filter(Boolean).join("\n\n");
+        const out = await writeDocument({
+          model: currentModel,
+          request: findings ? `${requestText()}\n\nFix these problems found by a check of the page in a real browser:\n${String(findings.content).split("\n").filter((l) => l.startsWith("- ")).join("\n")}` : requestText(),
+          plan: settings.plan ? planText(settings.plan) : null,
+          notes: [settings.partialThought, notes].filter(Boolean).join("\n\n"),
+          currentFile: current ? { path, content: current } : null,
+          designSystem: describeSystems(systems),
+          guides,
+          media: settings.media?.length ? settings.media.map((m) => `${m.tool}: ${m.url}`).join("\n") : null,
+          deadline: deadline - STOP_MARGIN_MS,
+          signal,
+          onText: (doc) => {
+            const now = Date.now();
+            if (now - lastEmit < 250) return;
+            lastEmit = now;
+            const extends_ = sent && doc.startsWith(sent);
+            void emit({ type: "draft", payload: { path, append: extends_ ? doc.slice(sent.length) : doc, reset: !extends_ } });
+            sent = doc;
+          },
+        });
+        const w = await fileTools.write_file({ path, content: out.html });
+        unchecked = w.path;
+        const prev = touched.get(w.path);
+        touched.set(w.path, { version: w.version, created: prev?.created ?? w.created });
+        if (settings.partialThought) {
+          delete settings.partialThought;
+          await db.from("projects").update({ settings }).eq("id", projectId);
+        }
+        await emit({ type: "tool-result", payload: { callId, name: "write_file", path: w.path, version: w.version, created: w.created } });
+        const reply = current ? `Updated "${w.path}".` : `Built "${w.path}" from the plan.`;
+        return { content: reply, reasoning: "", toolCalls: [], finish: "stop", usage: null };
+      } catch (e) {
+        await emit({ type: "tool-result", payload: { callId, name: "write_file", error: (e instanceof Error ? e.message : String(e)).split("\n")[0] } });
+        if (signal.aborted) throw e;
+        return null;
+      }
+    };
     /** Render a file in a browser and review it; shared by the agent's own check_design calls and the automatic check. */
     const runCheck = async (path: string) => {
       const f = await fileTools.read_file({ path });
@@ -937,27 +997,36 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             await db.from("projects").update({ settings }).eq("id", projectId);
             const plan = stepReasoning.trim();
             await emit({ type: "thought", payload: { text: plan.length > 12000 ? "…" + plan.slice(-12000) : plan, ms: Date.now() - stepStart } });
-            // Deliberating instead of acting: from here the request is written by a fresh, non-thinking pass of the same model
-            // (never another model), which keeps going across time-limit continues instead of rethinking the whole thing.
-            // The first step of a new request only asks its questions: it has nothing to write yet, so it isn't switched to writing.
+            // The first step of a new request only asks its questions: it has nothing to write yet.
             const asking = mustAsk || mustScope;
-            if (phase !== "plan" && !asking && !settings.writer) {
+            // Building, checking or editing: the thinking is done and what's missing is the writing. Re-asking the same long
+            // conversation only makes the model think it all over again, so its notes go to a fresh writing session instead.
+            // The page is already written and only its check and a reply are left: nothing to hand on, just close the step.
+            const onlyReplyLeft = !!settings.pendingCheck && !settings.partial && phase !== "build";
+            if (onlyReplyLeft) {
+              r = { content: "Done. It's on the canvas.", reasoning: "", toolCalls: [], finish: "stop", usage: null };
+            } else if (phase !== "plan" && !asking) {
               settings.writer = true;
-              await db.from("projects").update({ settings }).eq("id", projectId);
-              await emit({ type: "note", payload: { text: `Thought it through; handing the writing to a fresh pass of ${MODELS[currentModel].label} with thinking off, so it starts writing now.` } });
+              const written = await writeFresh(plan);
+              if (written) {
+                r = written;
+              }
             }
-            const draft = plan.length > 6000 ? "…" + plan.slice(-4000) : plan;
-            convo.push({
-              role: "user",
-              content:
-                asking
-                  ? `You've thought enough. Call ask_questions now with the form described above, in this reply, and nothing else. Your thinking so far:\n"""\n${draft}\n"""`
-                  : phase === "plan"
-                  ? `You've thought enough; time to hand in the plan. Your thinking so far:\n"""\n${draft}\n"""\nCall submit_plan now with a concrete plan based on it. Keep any further thinking to a few sentences.`
-                  : `Stop thinking and write. Your notes so far:\n"""\n${draft}\n"""\nCall write_file now with the <head>, the styles and the first sections only (about 4,000 to 6,000 characters), then continue with append_file for the next sections, in parts. Do not draft anything in your reasoning and do not try to produce the whole file in one call.`,
-            });
-            continue;
+            if (!r) {
+              const draft = plan.length > 6000 ? "…" + plan.slice(-4000) : plan;
+              convo.push({
+                role: "user",
+                content:
+                  asking
+                    ? `You've thought enough. Call ask_questions now with the form described above, in this reply, and nothing else. Your thinking so far:\n"""\n${draft}\n"""`
+                    : phase === "plan"
+                    ? `You've thought enough; time to hand in the plan. Your thinking so far:\n"""\n${draft}\n"""\nCall submit_plan now with a concrete plan based on it. Keep any further thinking to a few sentences.`
+                    : `Stop thinking and write. Your notes so far:\n"""\n${draft}\n"""\nCall write_file now with the <head>, the styles and the first sections only (about 4,000 to 6,000 characters), then continue with append_file for the next sections, in parts.`,
+              });
+              continue;
+            }
           }
+          if (!r) {
           if ((e as any)?.name === "TimeoutError" && deadline - Date.now() < STOP_MARGIN_MS + 5000) {
             await savePartial();
             // Long thinking that ran out the clock is kept (in the chat and for the next round), not thrown away.
@@ -980,6 +1049,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             },
           });
           break;
+          }
         } finally {
           clearInterval(thinkTimer);
           signal.removeEventListener("abort", onTurnAbort);
