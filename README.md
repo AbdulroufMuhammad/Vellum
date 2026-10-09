@@ -171,8 +171,8 @@ read-only file, render and export endpoints they use).
   `submit_plan`, shown as a plan card), **building** (write the files from the
   plan) and **checking** (browser check first, then fixes and the reply).
   Small follow-up edits run as one step. A step that only deliberates for 45s
-  (90s when planning) is cut, its thinking kept, and the rest of the request is
-  handed to DeepSeek V3 with that plan.
+  (90s when planning) is cut, its thinking kept, and the same selected model is
+  told to act on that plan — the model never changes mid-request.
 - **Pages and files** — the canvas header's menu lists the project's pages
   (newest first, with edit times), a **New blank page**, and **All project
   files**: pages and uploads side by side with a preview, **New sketch** (a

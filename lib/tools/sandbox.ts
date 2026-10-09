@@ -1,4 +1,4 @@
-import { Sandbox } from "@vercel/sandbox";
+import type { Sandbox } from "@vercel/sandbox";
 
 /**
  * Real code execution for attached data files (reconciling spreadsheets, computing real numbers
@@ -37,8 +37,14 @@ export class CodeSandbox {
 
   private async setup(dataFiles: DataFile[]) {
     if (this.ready) return;
+    const creds = credentials();
+    // Loaded only when run_code actually runs, so a problem with this package (or its undici dependency on an
+    // older Node) can never take down a turn that has no spreadsheet attached.
+    const { Sandbox } = await import("@vercel/sandbox").catch((e) => {
+      throw new Error(`code execution isn't available: ${e instanceof Error ? e.message : String(e)}`);
+    });
     this.sandbox = await Sandbox.create({
-      ...credentials(),
+      ...creds,
       persistent: false,
       timeout: SANDBOX_TIMEOUT_MS,
       resources: { vcpus: 2 },
