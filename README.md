@@ -142,6 +142,21 @@ read-only file, render and export endpoints they use).
   builds before being written down. The server-side visual check can't render
   WebGPU or physics scenes (no GPU on Vercel), so it skips them there; run
   locally with `VELLUM_GPU=1` and a GPU to have the check photograph them.
+- **Soft bodies you can grab and slice** (`lib3d/softbody.js`, taught in
+  `lib/babylonFilm.ts`) — jelly, fruit, pudding, dough, cheese. A dependency-free
+  browser library: describe a shape as a signed-distance function and it builds
+  a symmetric tetrahedral simulation mesh and a smooth render surface, then runs
+  XPBD physics (co-rotational elasticity + volume constraints, adapted from a
+  hand-built jelly-knife demo) with grabbing, floor friction and damping.
+  `cut()` slices along any plane: vertices snap flat, the object splits into
+  pieces that drift apart, and the render surface is clipped and capped with a
+  triangulated cut face coloured from the inside (`colorAt` gets depth and an
+  is-cap flag, so a watermelon shows rind, pith and flesh). `attachBabylon()`
+  adds picking, grab, a knife stroke and per-frame updates, with fewer solver
+  substeps on slow machines. Generated designs import it from jsDelivr at a
+  pinned commit (`SOFTBODY_REF`: bump it when the file changes). It runs on the
+  visitor's machine, no GPU server. `node scripts/test-softbody.mjs` checks
+  volume, drift, winding and repeated cuts.
 - **Realistic 3D** — 3D requests get a playbook: plan real dimensions and a
   parts list with what each part attaches to; build in a hierarchy with lathe,
   bevelled extrusions, tubes between real anchor points and instanced repeats;
