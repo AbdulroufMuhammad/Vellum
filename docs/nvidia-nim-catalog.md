@@ -23,7 +23,6 @@ since the whole agent loop depends on `tool_calls`:
 | `deepseek-v4` | deepseek-v4.1-flash | DeepSeek (via NVIDIA) |
 | `gpt-oss` | gpt-oss-20b | OpenAI (open-weight) |
 | `kimi` | kimi-k3 | Moonshot AI |
-| `mistral-nemotron` | mistral-nemotron | Mistral AI |
 | `nemotron-super` | nemotron-3-super-120b-a12b | NVIDIA |
 | `nemotron-lightning` | nemotron-3.5-lightning-30b-a3b | NVIDIA |
 | `nemotron-ultra` | nemotron-3-ultra-550b-a55b | NVIDIA |

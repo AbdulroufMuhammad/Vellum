@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { chat, modelKeyFor, MODELS, type ChatMessage, type ModelKey, type ToolSchema } from "@/lib/gateway";
+import { chat, ignoresThinkingOff, modelKeyFor, MODELS, type ChatMessage, type ModelKey, type ToolSchema } from "@/lib/gateway";
 import { makeEmitter, type AgentEvent, type Emit } from "@/lib/events";
 import { FILE_TOOL_SCHEMAS, makeFileTools, cleanPath } from "@/lib/tools/files";
 import { SourceRegistry, WEB_TOOL_SCHEMAS } from "@/lib/tools/search";
@@ -40,6 +40,13 @@ const THINK_LIMIT_MS = Number(process.env.THINK_LIMIT_MS ?? 45_000);
 const PLAN_THINK_MS = Number(process.env.PLAN_THINK_MS ?? 130_000);
 // Once a request is being written (or has been cut off for deliberating), thinking is off and a pass that still reasons is cut much sooner.
 const WRITER_THINK_MS = Number(process.env.WRITER_THINK_MS ?? 12_000);
+// Each cut doubles the room the next pass gets, and after this many the model is left to finish: a model that always reasons
+// before it acts (GLM 5.3 ignores "thinking off") was otherwise cut at the same limit every pass, forever, writing nothing.
+const MAX_THINK_CUTS = 3;
+// "Make it better" on an existing design is a redesign, not a small edit: it gets the plan step (where the thinking belongs)
+// and a build written in parts, instead of one step that has to think and rewrite the whole file at once.
+const REDESIGN =
+  /\b(re-?design|revamp|overhaul|restyle|rework|make (it|this|the [\w ]{1,24}?) (look )?(better|nicer|prettier|cleaner|more modern|modern|premium|more professional|professional|beautiful|stunning)|improve (the )?(ui|ux|design|look|layout|styling|visuals?)|better (ui|design|look)|from scratch|start over)\b/i;
 
 class ThinkLimit extends Error {
   name = "ThinkLimit";
@@ -348,6 +355,8 @@ type ProjectSettings = {
   buildReply?: string;
   /** The rest of this request is written by a fresh, non-thinking pass of the same model (set when it deliberated past the limit). */
   writer?: boolean;
+  /** How many times this request has been cut for deliberating; kept across time-limit continues so the backoff carries on. */
+  thinkCuts?: number;
   /** File versions this request is still writing (see WorkingVersions); cleared when the request is done. */
   workingVersions?: Record<string, number>;
   /** The design system this project made and saved to the picker, and its spec file; revisions to that file update it. */
@@ -543,7 +552,8 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     const repo = project.codebase ? makeRepoTools(project.codebase, opts.githubToken ?? null) : null;
     // A new design (or a big request) is split into plan, build and check, each its own invocation.
     const newest = (history ?? []).find((m) => m.role === "user");
-    const big = files.length === 0 || template.id === "research" || String(newest?.content ?? "").length > 280;
+    const redesign = files.length > 0 && !newest?.meta?.target && REDESIGN.test(String(newest?.content ?? ""));
+    const big = files.length === 0 || template.id === "research" || String(newest?.content ?? "").length > 280 || redesign;
     const isEdit = !!newest?.meta?.target;
     // Every new request (not a small edit, a comment on an element, or the answers themselves) starts with a form:
     // how deep to go, what type or style, and whatever else the request leaves open. The user can skip it.
@@ -553,11 +563,12 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     const userMsgs = (history ?? []).filter((m) => m.role === "user");
     const answeredEarlier = userMsgs.slice(1).some((m) => m.meta?.answers);
     const nudge = String(newest?.content ?? "").trim().length < 120 && answeredEarlier;
-    const mustAsk = !opts.resume && big && !isEdit && !newest?.meta?.answers && !optedOut && !nudge && template.id !== "research";
+    const mustAsk = !opts.resume && big && !isEdit && !newest?.meta?.answers && !optedOut && !nudge && template.id !== "research" && !redesign;
     if (!opts.resume) {
       delete settings.plan;
       delete settings.buildReply;
       delete settings.writer;
+      delete settings.thinkCuts;
       if (big && !isEdit && !mustScope && !mustAsk) {
         settings.phase = "plan";
         settings.phaseFresh = true;
@@ -705,7 +716,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     };
     const checkDeferred = !!settings.pendingCheck;
     let badCalls = 0;
-    let thinkCuts = 0;
+    let thinkCuts = settings.thinkCuts ?? 0;
     let stallCuts = 0;
     let missingNudges = 0;
     let status: "ready" | "paused" = "ready";
@@ -764,6 +775,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
         delete settings.plan;
         delete settings.buildReply;
         delete settings.writer;
+        delete settings.thinkCuts;
         // Done (and checked): the versions written in this request are final; the next change starts new ones.
         delete settings.workingVersions;
         await db.from("projects").update({ settings }).eq("id", projectId);
@@ -843,12 +855,15 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
         // was the plan. A request that was cut off for deliberating stays in that mode for the rest of it (settings.writer).
         const writerMode = !!settings.writer || phase === "build" || phase === "check";
         // Re-checked every second once past the limit: slow thinkers may not have written much yet when it's first reached.
-        const thinkLimit = writerMode ? WRITER_THINK_MS : phase === "plan" ? PLAN_THINK_MS : THINK_LIMIT_MS;
+        // A model known to reason even with thinking off can't write without some thinking first, so it starts with the edit limit.
+        const baseLimit = writerMode ? (ignoresThinkingOff(currentModel) ? THINK_LIMIT_MS : WRITER_THINK_MS) : phase === "plan" ? PLAN_THINK_MS : THINK_LIMIT_MS;
+        const thinkLimit = baseLimit * 2 ** Math.min(thinkCuts, MAX_THINK_CUTS);
+        const cutting = thinkCuts < MAX_THINK_CUTS;
         // A model that drafts the deliverable inside its reasoning (the whole HTML and CSS) burns the time budget and starts
         // over on the next invocation: that's cut at once, whatever the clock says.
         const draftingInThought = () => phase !== "plan" && stepReasoning.length > 2500 && /<!doctype html|<html[\s>]|<style[\s>]|```(?:html|css)\b/i.test(stepReasoning.slice(-6000));
         const thinkTimer = setInterval(() => {
-          if (acted) return;
+          if (acted || !cutting) return;
           if ((Date.now() - stepStart > thinkLimit && stepReasoning.length > 200) || draftingInThought()) stepCtrl.abort(new ThinkLimit("thought too long without acting"));
         }, 1000);
         let r;
@@ -918,6 +933,8 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
           if (stalled) stallCuts++;
           if (e instanceof ThinkLimit || (e as any)?.name === "ThinkLimit" || stalled) {
             thinkCuts++;
+            settings.thinkCuts = thinkCuts;
+            await db.from("projects").update({ settings }).eq("id", projectId);
             const plan = stepReasoning.trim();
             await emit({ type: "thought", payload: { text: plan.length > 12000 ? "…" + plan.slice(-12000) : plan, ms: Date.now() - stepStart } });
             // Deliberating instead of acting: from here the request is written by a fresh, non-thinking pass of the same model

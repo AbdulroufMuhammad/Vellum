@@ -9,6 +9,9 @@
  *   dumps-text    the model writes the plan, then the whole page, into the chat instead of calling the tools
  *   dumps-forever the model pastes the plan and page as chat text every time, even when nudged (recovered each time)
  *   prose-only    the model only ever answers in prose, never a tool call or code (the nudges must give up cleanly, no loop)
+ *   edit-reasons  an existing invoice, then "Make the UI better"; every call reasons for REASON_MS (default 3s, longer than the
+ *                 test's 2s think limits) before it acts, ignoring "thinking off", the way GLM 5.3 behaves. Must end with a new
+ *                 version of the file, not an endless run of cuts.
  *   thinks-long   the model reasons for a long time in the plan step before calling submit_plan
  *
  * The check step really renders the page in headless Chromium (set CHROMIUM_PATH to a Chromium binary).
@@ -98,6 +101,20 @@ function sse(res: http.ServerResponse, chunks: any[]) {
   res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 10 } })}\n\ndata: [DONE]\n\n`);
   res.end();
 }
+/** Streams reasoning for `ms`, then the given chunks: a model that always thinks before acting. */
+async function sseReasoning(res: http.ServerResponse, ms: number, chunks: any[]) {
+  res.writeHead(200, { "Content-Type": "text/event-stream" });
+  const end = Date.now() + ms;
+  while (Date.now() < end && !res.destroyed) {
+    res.write(`data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: "Let me think about the layout and the palette. " }, finish_reason: null }] })}\n\n`);
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  if (res.destroyed) return false;
+  for (const c of chunks) res.write(`data: ${JSON.stringify({ choices: [{ delta: c, finish_reason: null }] })}\n\n`);
+  res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+  res.end();
+  return true;
+}
 const toolCall = (name: string, args: object) => [{ tool_calls: [{ index: 0, id: "call_" + randomUUID().slice(0, 8), type: "function", function: { name, arguments: JSON.stringify(args) } }] }];
 const modelServer = http.createServer((req, res) => {
   let b = ""; req.on("data", (c) => (b += c));
@@ -114,6 +131,17 @@ const modelServer = http.createServer((req, res) => {
     const building = text.includes("## This step: building");
     const checking = text.includes("## This step: checking") || text.includes("An automatic check");
     const nudged = /You answered in text|Stop thinking and write|You've thought enough/.test(last);
+    if (scenario === "edit-reasons") {
+      const ms = Number(process.env.REASON_MS ?? 3000);
+      const afterTool = msgs[msgs.length - 1]?.role === "tool";
+      const better = pageHtml.replace("background:#fbf9f4", "background:#f6f1e6").replace("<h1>Superbio Studio</h1>", "<h1>Superbio Studio</h1><p class=\"tag\">Redesigned</p>");
+      const [kind, chunks] = afterTool ? ["done", [{ content: "Redesigned the invoice." }]]
+        : planning ? ["plan", toolCall("submit_plan", { ...planObj, files: ["Invoice Demo.html"] })]
+        : ["write", toolCall("write_file", { path: "Invoice Demo.html", content: better })];
+      const finished = await sseReasoning(res, ms, chunks as any[]);
+      requests.push({ kind: finished ? kind : "cut", reply: "" });
+      return;
+    }
     if (scenario === "prose-only") return reply("prose", [{ content: "Sure, I will design a classic invoice with a serif look and a gold accent, and it will print on one page." }], "prose only");
     if (planning) {
       if (scenario === "thinks-long" && !nudged) { await new Promise((r) => setTimeout(r, 3500)); }
@@ -144,17 +172,27 @@ async function main() {
   process.env.NEXT_PUBLIC_SUPABASE_URL = "http://fake.local"; process.env.SUPABASE_SERVICE_ROLE_KEY = "test";
   process.env.CHROMIUM_PATH ??= "/opt/pw-browsers/chromium-1194/chrome-linux/chrome";
   process.env.THINK_LIMIT_MS ??= "2000"; process.env.WRITER_THINK_MS ??= "2000"; process.env.PLAN_THINK_MS ??= "30000";
+  // A short turn budget so a loop shows up in seconds rather than minutes (each invocation is one "turn").
+  if (scenario === "edit-reasons") process.env.TURN_BUDGET_MS ??= "45000";
   const { runTurn } = await import("../lib/agent");
 
   const projectId = randomUUID();
   tables.projects.push({ id: projectId, title: "Create an invoice demo for Superbio", template: "blank", model_profile: "glm", design_system_id: null, goal: "Create an invoice demo for Superbio", status: "idle", budget: { tokensLeft: 200000, searchesLeft: 40, rounds: 0, maxRounds: 3 }, settings: {}, codebase: null, run_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
   tables.messages.push({ id: randomUUID(), project_id: projectId, role: "user", content: "Create an invoice demo for Superbio", meta: {}, created_at: new Date(Date.now() - 2000).toISOString() });
   tables.messages.push({ id: randomUUID(), project_id: projectId, role: "user", content: "How deep should this go?\n→ Standard", meta: { answers: { scope: "Standard" } }, created_at: new Date(Date.now() - 1000).toISOString() });
+  if (scenario === "edit-reasons") {
+    // The invoice already exists (v1); the user then asks for a redesign, as in the GLM project.
+    storage.set(`${projectId}/v1.html`, pageHtml);
+    tables.files.push({ id: randomUUID(), project_id: projectId, path: "Invoice Demo.html", version: 1, storage_path: `${projectId}/v1.html`, content_type: "text/html", created_at: new Date(Date.now() - 900).toISOString() });
+    tables.messages.push({ id: randomUUID(), project_id: projectId, role: "assistant", content: "Built the invoice.", meta: {}, created_at: new Date(Date.now() - 800).toISOString() });
+    tables.messages.push({ id: randomUUID(), project_id: projectId, role: "user", content: process.env.EDIT_MESSAGE ?? "Make the UI better", meta: {}, created_at: new Date(Date.now() - 700).toISOString() });
+  }
 
   const t0 = Date.now();
   const log: string[] = [];
   let invocations = 0, resume = false;
-  for (; invocations < 8; invocations++) {
+  const maxInvocations = scenario === "edit-reasons" ? 3 : 8;
+  for (; invocations < maxInvocations; invocations++) {
     let sawContinue = false, sawError = false;
     await runTurn(fakeDb, projectId, {
       resume,
@@ -180,7 +218,8 @@ async function main() {
   console.log(`files written: ${files.length ? files.map((f) => `${f.path} v${f.version} (${storage.get(f.storage_path)?.length ?? 0} chars)`).join(", ") : "NONE"}`);
   console.log(`final chat reply: ${JSON.stringify((final?.content ?? "").slice(0, 140))}`);
   console.log(`took ${((Date.now() - t0) / 1000).toFixed(1)}s`);
-  const wrote = files.length > 0 && (storage.get(files[0].storage_path)?.length ?? 0) > 1000;
+  const newest = [...files].sort((a, b) => b.version - a.version)[0];
+  const wrote = scenario === "edit-reasons" ? !!newest && newest.version >= 2 && /Redesigned/.test(storage.get(newest.storage_path) ?? "") : files.length > 0 && (storage.get(files[0].storage_path)?.length ?? 0) > 1000;
   const chatHasCode = /```|<!doctype/i.test(final?.content ?? "");
   modelServer.close();
   const expectFile = scenario !== "prose-only";

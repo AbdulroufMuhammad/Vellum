@@ -9,7 +9,6 @@ export type ModelKey =
   | "deepseek"
   | "gpt-oss"
   | "kimi"
-  | "mistral-nemotron"
   | "nemotron-super"
   | "nemotron-lightning"
   | "nemotron-ultra"
@@ -36,7 +35,6 @@ export const MODELS: Record<ModelKey, ModelConfig> = {
   deepseek: { id: "deepseek-chat", label: "DeepSeek V3", note: "DeepSeek API", provider: "deepseek", temperature: 0.6, top_p: 1, max_tokens: 8192 },
   "gpt-oss": { id: "openai/gpt-oss-20b", label: "GPT-OSS 20B", note: "Open-weight, agentic", provider: "nvidia", temperature: 0.7, top_p: 1, max_tokens: 16384 },
   kimi: { id: "moonshotai/kimi-k3", label: "Kimi K3", note: "Long context", provider: "nvidia", temperature: 0.6, top_p: 0.95, max_tokens: 16384 },
-  "mistral-nemotron": { id: "mistralai/mistral-nemotron", label: "Mistral Nemotron", note: "Agentic workflows", provider: "nvidia", temperature: 0.6, top_p: 1, max_tokens: 16384 },
   "nemotron-super": { id: "nvidia/nemotron-3-super-120b-a12b", label: "Nemotron 3 Super", note: "Large MoE, high quality", provider: "nvidia", temperature: 0.6, top_p: 0.95, max_tokens: 16384 },
   "nemotron-lightning": { id: "nvidia/nemotron-3.5-lightning-30b-a3b", label: "Nemotron 3.5 Lightning", note: "Fast MoE", provider: "nvidia", temperature: 0.6, top_p: 0.95, max_tokens: 16384 },
   "nemotron-ultra": { id: "nvidia/nemotron-3-ultra-550b-a55b", label: "Nemotron 3 Ultra", note: "Largest MoE, top quality", provider: "nvidia", temperature: 0.6, top_p: 0.95, max_tokens: 16384 },
@@ -69,6 +67,13 @@ export function modelKeyFor(stored: string | null | undefined): ModelKey {
 
 // Models whose endpoint rejected the "no thinking" switch: it isn't sent to them again.
 const noThinkSwitch = new Set<ModelKey>();
+// Models that kept reasoning although the switch was accepted (GLM 5.3 on NVIDIA does): they can't write without thinking
+// first, so callers give them more room before treating a pass as deliberating instead of acting.
+const keepsThinking = new Set<ModelKey>();
+/** True once this model has been seen reasoning in a call that asked for no thinking. */
+export function ignoresThinkingOff(key: ModelKey) {
+  return keepsThinking.has(key);
+}
 const THINKING_OFF = { chat_template_kwargs: { enable_thinking: false }, thinking: { type: "disabled" } };
 
 const KEY_ENV = { nvidia: "NVIDIA_API_KEY", deepseek: "DEEPSEEK_API_KEY" } as const;
@@ -249,6 +254,10 @@ async function chatOnce(modelKey: ModelKey, opts: ChatOpts, onFirstByte: () => v
         if (!c) continue;
         const d = c.delta ?? {};
         const thought = d.reasoning_content ?? d.reasoning;
+        if (thinkOff && typeof thought === "string" && thought && !keepsThinking.has(modelKey)) {
+          keepsThinking.add(modelKey);
+          console.log(`[gateway] ${m.id} keeps reasoning with thinking off`);
+        }
         if (first && (d.content || d.tool_calls || thought)) {
           first = false;
           onFirstByte();
@@ -317,6 +326,9 @@ export async function chat(modelKey: ModelKey, opts: ChatOpts): Promise<ChatResu
         console.log(`[gateway] ${MODELS[modelKey].id}: ${e.message}; retrying once`);
         retried = true;
         continue;
+      }
+      if (e instanceof GatewayError && e.status === 410) {
+        throw new Error(`${MODELS[modelKey].label} has been retired by its provider and is no longer available. Pick another model in the model picker.`);
       }
       if (e instanceof GatewayError && (e.status === 401 || e.status === 403)) {
         const provider = MODELS[modelKey].provider;
