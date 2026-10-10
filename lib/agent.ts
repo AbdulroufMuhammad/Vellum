@@ -12,14 +12,15 @@ import { checkDesign, type CheckResult } from "@/lib/tools/visualCheck";
 import { getTemplate, scopeQuestion } from "@/lib/templates";
 import { extractDesignSystem } from "@/lib/extractDesignSystem";
 import { ASK_PARAMETERS, cleanQuestions } from "@/lib/questions";
-import { DEFAULT_DEPTH, depthFrom, withDepthQuestion } from "@/lib/research";
+import { depthFromAnswers, depthHint, withDepthQuestion } from "@/lib/research";
+import { cleanSplit, findingsText, ONE_AT_A_TIME, runResearchers, splitInstructions, SPLIT_SCHEMA, type ResearchState } from "@/lib/researchOrchestrator";
 import { planPreviewHtml, planningPlaceholderHtml } from "@/lib/planPreview";
 import { is3DRequest } from "@/lib/threeD";
 import { babylonGuide } from "@/lib/babylon3D";
 import { physicsGuide, softBodyGuide, wantsPhysics, wantsSoftBody } from "@/lib/babylonFilm";
 import { missingCallNudge, replyWithoutCode, salvageToolCall } from "@/lib/salvage";
 import { isCinematicRequest, cinematicGuide } from "@/lib/cinematic";
-import { wantsResearch, researchGuide, SKILL_RESEARCH_SOURCES } from "@/lib/research-skill";
+import { wantsResearch, researchGuide } from "@/lib/research-skill";
 import { CodeSandbox, RUN_CODE_SCHEMA, type DataFile } from "@/lib/tools/sandbox";
 import { describeForAgent, fromRow, type DesignSystem } from "@/lib/designSystems";
 import { describeImage } from "@/lib/tools/vision";
@@ -242,7 +243,7 @@ async function saveDesignSystem(db: SupabaseClient, projectId: string, settings:
   return fromRow(data);
 }
 
-function systemPrompt(opts: { templateBrief: string; designSystem: string; codebase: string | null; research: boolean; researchSources: number; threeD: boolean; physics: boolean; softBody: boolean; cinematic: boolean; dataFiles: DataFile[] }) {
+function systemPrompt(opts: { templateBrief: string; designSystem: string; codebase: string | null; research: boolean; threeD: boolean; physics: boolean; softBody: boolean; cinematic: boolean; dataFiles: DataFile[] }) {
   return `You are the design agent in Vellum, a design tool where people describe what they want and you make it on a live canvas. You work like a senior product designer who writes production-quality HTML, CSS and JavaScript.
 
 ## Files
@@ -256,7 +257,8 @@ function systemPrompt(opts: { templateBrief: string; designSystem: string; codeb
 
 ## How you work
 - Think briefly and practically: decide the direction, then build. Don't deliberate at length over details (exact pixel values, alternatives you won't use); the first version can be refined after it's on the canvas.
-- Before each batch of tool calls, write one short line (under 12 words) saying what you're doing, as a present participle, e.g. "Picking a font pairing and accent color." It appears as a progress row.
+- One action at a time: ${ONE_AT_A_TIME} Extra calls in a reply are not run.
+- Before each tool call, write one short line (under 12 words) saying what you're doing, as a present participle, e.g. "Picking a font pairing and accent color." It appears as a progress row.
 - If a request leaves important choices open (what it's for, audience, content, features or sections needed, tone, format), call ask_questions with a proper form instead of guessing: ask everything you actually need in one go (usually 3–6 questions), each with the field type that fits. Use single for one-of choices, multi (checkboxes) for picking several, like features, sections or pages needed, select for a long list, text for names and specifics, long for descriptions, number or slider for quantities (e.g. how many screens or slides), and toggle for yes/no. Give concrete options, not vague ones, and preselect a sensible default where one is obvious. Every new request opens with such a form (you'll be told when); for follow-ups, ask only when something essential is unclear. Never ask twice in a row; once answered, or skipped, design with what you have and decide anything left open yourself.
 - Every file you write is checked automatically in a real browser before your reply reaches the user, and any real problems come back to you to fix. You can also call check_design yourself mid-way. When problems come back, fix them directly; don't ask the user.
 - If the user asks you to create, extract or define a design system, make a visual spec file for it (palette with roles and hex values, type scale, spacing/radius, core components in their states) and call save_design_system so it becomes reusable.
@@ -283,7 +285,7 @@ function systemPrompt(opts: { templateBrief: string; designSystem: string; codeb
 Expose 2–5 meaningful live controls when they'd help the user explore (accent color, density, speed, which screen to show, a layout variant). Declare them in the file as:
 <script type="application/json" id="tweaks">[{"name":"accent","label":"Accent","type":"color","value":"#d9774f"},{"name":"speed","type":"range","min":200,"max":2000,"step":50,"value":700,"unit":"ms"},{"name":"startScreen","type":"select","options":["home","detail"],"value":"home"},{"name":"grid","type":"toggle","value":false}]</script>
 The canvas applies every value as a CSS custom property on :root (--accent, --speed with its unit, --grid as 1/0), as an attribute on <html> (data-start-screen="detail"; camelCase names become kebab-case), and fires window.addEventListener("tweak", e => e.detail.name / e.detail.value) on load and on every change. Use var(--name) in CSS or the event in JS.
-${opts.threeD ? `\n${babylonGuide()}\n${opts.physics ? `\n${physicsGuide()}\n` : ""}${opts.softBody ? `\n${softBodyGuide()}\n` : ""}` : ""}${opts.cinematic ? `\n${cinematicGuide()}\n` : ""}${opts.research ? `\n${researchGuide(opts.researchSources)}\n` : "\n## Facts\nDraft first. Write the design straight away from what you know; use web_search / web_fetch only for a specific real-world fact you'd otherwise get wrong, and cite it as [S3]. Most design work needs no search at all, and each turn allows at most 6 searches and fetches.\n"}${
+${opts.threeD ? `\n${babylonGuide()}\n${opts.physics ? `\n${physicsGuide()}\n` : ""}${opts.softBody ? `\n${softBodyGuide()}\n` : ""}` : ""}${opts.cinematic ? `\n${cinematicGuide()}\n` : ""}${opts.research ? `\n${researchGuide()}\n` : "\n## Facts\nDraft first. Write the design straight away from what you know; use web_search / web_fetch only for a specific real-world fact you'd otherwise get wrong, and cite it as [S3]. Most design work needs no search at all.\n"}${
     opts.dataFiles.length
       ? `\n## Data files\nAttached: ${opts.dataFiles.map((f) => `"${f.name}"`).join(", ")}. Don't guess at their contents or eyeball numbers from a paraphrase — call run_code (real Python, pandas/openpyxl preinstalled) to actually read them, at /tmp/data/<name>, and compute real results: matched/unmatched rows, totals, variances, whatever the request needs. Print a JSON summary to stdout and use those exact numbers in the design — never invent or round a number run_code didn't produce. A reconciliation or data-comparison result is a dashboard the same way a research report is (see Design quality): a stat-tile row of the headline counts, a verdict panel, and the mismatches themselves in a real table, not a wall of prose. Treat run_code like web_search: use it to get the numbers, then build.\n`
       : ""
@@ -346,10 +348,14 @@ type ProjectSettings = {
   /**
    * A new design runs as three steps, each its own invocation with its own time budget and its own section
    * in the chat: plan (think, research, ask; hand in a plan), build (write the files from the plan) and
-   * check (browser check, fixes, reply). Small follow-up edits run as one step.
+   * check (browser check, fixes, reply). Small follow-up edits run as one step. A scoped research request
+   * starts with two more: split (the orchestrator breaks it into parts) and research (one researcher per
+   * part, one after another, across as many invocations as it takes).
    */
-  phase?: "plan" | "build" | "check";
+  phase?: "split" | "research" | "plan" | "build" | "check";
   plan?: Plan;
+  /** A research request's parts and each researcher's progress and notes (see lib/researchOrchestrator.ts); cleared when the request is done. */
+  research?: ResearchState;
   /** The phase this invocation starts fresh (not a time-limit resume within the same phase). */
   phaseFresh?: boolean;
   /** The build step's closing line, used as the reply when the check finds nothing to fix. */
@@ -516,17 +522,21 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
       dsIds.length ? db.from("design_systems").select("*").in("id", dsIds) : Promise.resolve({ data: [] as any[] }),
       db.from("messages").select("id, role, content, meta, created_at").eq("project_id", projectId).order("created_at", { ascending: false }).limit(400),
       listFiles(db, projectId),
-      SourceRegistry.load(db, projectId, project.budget),
+      SourceRegistry.load(db, projectId),
     ]);
 
     const template = getTemplate(project.template);
     // Research is scoped first: the depth the user picks sets the sources read and the report's printed length.
     const userTexts = (history ?? []).filter((m) => m.role === "user").map((m) => String(m.content ?? ""));
     const answeredForm = (history ?? []).some((m) => m.role === "user" && m.meta?.answers);
-    const depth = template.id === "research" ? depthFrom(userTexts) ?? (answeredForm ? DEFAULT_DEPTH : null) : null;
-    const mustScope = template.id === "research" && !depth && !answeredForm;
+    // Only the form sets the depth. Words in the request ("a full book", "quick") just preselect its answer: the template's own
+    // steps are pasted into the request ("Ask me how deep to go (a quick overview…)"), and reading those as a choice skipped the form.
+    const researchSteps = getTemplate("research").prefill?.steps ?? [];
+    const depth = template.id === "research" ? depthFromAnswers((history ?? []).filter((m) => m.role === "user" && m.meta?.answers).map((m) => m.meta.answers)) : null;
+    const depthPreferred = template.id === "research" ? depthHint(userTexts.join("\n"), researchSteps) : null;
+    const scopeOptOut = /\b(don'?t|do not|no need to) ask|no questions|skip (the )?questions\b/i.test(userTexts[0] ?? "");
+    const mustScope = template.id === "research" && !answeredForm && !scopeOptOut;
     const needsResearch = template.id === "research" || wantsResearch(template.id, userTexts[0] ?? String(project.goal ?? ""));
-    sources.turnLimit = template.id === "research" ? (depth ?? DEFAULT_DEPTH).sources : needsResearch ? SKILL_RESEARCH_SOURCES : 6;
     // Spreadsheets attached anywhere in the conversation, not just the latest message: the user might
     // attach a file in one message and ask to work with it in a later one.
     const dataFiles: DataFile[] = [];
@@ -565,12 +575,20 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     const answeredEarlier = userMsgs.slice(1).some((m) => m.meta?.answers);
     const nudge = String(newest?.content ?? "").trim().length < 120 && answeredEarlier;
     const mustAsk = !opts.resume && big && !isEdit && !newest?.meta?.answers && !optedOut && !nudge && template.id !== "research" && !redesign;
-    if (!opts.resume) {
+    // "continue" after research stopped partway (an error, or Stop) carries on with the researchers instead of starting over.
+    const resumesResearch = !opts.resume && nudge && settings.phase === "research" && !!settings.research && settings.research.current < settings.research.questions.length;
+    if (!opts.resume && !resumesResearch) {
       delete settings.plan;
       delete settings.buildReply;
       delete settings.writer;
       delete settings.thinkCuts;
-      if (big && !isEdit && !mustScope && !mustAsk) {
+      delete settings.research;
+      // The answers to a research form start the orchestrator: split into parts, research each, then plan, build and check.
+      const startsResearch = template.id === "research" && !isEdit && (!!newest?.meta?.answers || (scopeOptOut && !files.length));
+      if (startsResearch) {
+        settings.phase = "split";
+        settings.phaseFresh = true;
+      } else if (big && !isEdit && !mustScope && !mustAsk) {
         settings.phase = "plan";
         settings.phaseFresh = true;
       } else delete settings.phase;
@@ -580,8 +598,10 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     if (phaseFresh) delete settings.phaseFresh;
     const baseTools = [...WEB_TOOL_SCHEMAS, ...GENAI_TOOL_SCHEMAS, VIDEO_TOOL_SCHEMA, ...(repo ? REPO_TOOL_SCHEMAS : []), ...(dataFiles.length ? [RUN_CODE_SCHEMA] : [])];
     const tools: ToolSchema[] =
+      phase === "split" || phase === "research"
+        ? [SPLIT_SCHEMA]
       // A half-written file always needs the file tools, whatever the step.
-      phase === "plan" && !settings.partial
+      : phase === "plan" && !settings.partial
         ? [...baseTools, ASK_SCHEMA, PLAN_SCHEMA]
         : phase
           ? [...FILE_TOOL_SCHEMAS, ...baseTools, APPEND_SCHEMA, SAVE_DS_SCHEMA]
@@ -609,7 +629,6 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             designSystem: describeSystems(systems),
             codebase: project.codebase,
             research: needsResearch,
-            researchSources: sources.turnLimit,
             threeD: is3DRequest(template.id, String(newest?.content ?? project.goal ?? "")),
             physics: wantsPhysics(`${project.goal ?? ""} ${newest?.content ?? ""}`),
             softBody: wantsSoftBody(`${project.goal ?? ""} ${newest?.content ?? ""}`),
@@ -641,15 +660,25 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
       context += `\n\n## First: ask\nThis is a new request, so before designing, researching or planning anything, call ask_questions, then stop and wait for the answers. The form must include, in this order: (1) id "scope": "${sq.question}" (single, options ${sq.options.map((o) => `"${o}"`).join(", ")}, default "${sq.default}"); (2) the type or style it should take (single, 3 to 5 concrete options specific to this request, with Other); then (3) 1 to 4 more questions about what this particular request leaves open (audience, content to include, tone, must-haves). Use what the request already answers as defaults instead of asking it again. The form has a "Skip, use your judgement" button, so keep it short.`;
     } else if (mustScope) {
       context +=
-        "\n\nThis is a new research request. Before any searching, call ask_questions to scope it: the form always includes how deep to go (which sets the report's length), so add 2 to 4 questions specific to this topic, such as the focus areas to cover (multi), who it's for, the time period or region, and anything to include or leave out.";
+        "\n\n## First: ask\nThis is a new research request. Before any searching or planning, call ask_questions to scope it, then stop and wait for the answers. The form always includes how deep to go (added for you), so ask 2 to 4 questions specific to this topic: the focus areas to cover (multi, with concrete options), who it's for and their level, the time period or region if it matters, and anything to include or leave out. Use what the request already says as defaults.";
     } else if (depth) {
-      context += `\n\nResearch depth: ${depth.label}. The report should print to ${depth.pages[0] === depth.pages[1] ? depth.pages[0] : `${depth.pages[0]} to ${depth.pages[1]}`} US Letter page${depth.pages[1] > 1 ? "s" : ""}: declare it with <meta name="pages" content="${depth.pages[0] === depth.pages[1] ? depth.pages[0] : `${depth.pages[0]}-${depth.pages[1]}`}"> and write enough real substance to fill it. Read about ${depth.sources} sources.`;
+      const range = depth.pages[0] === depth.pages[1] ? `${depth.pages[0]}` : `${depth.pages[0]}-${depth.pages[1]}`;
+      context += `\n\nResearch depth: ${depth.label}. The report should print to ${range.replace("-", " to ")} US Letter page${depth.pages[1] > 1 ? "s" : ""}: declare it with <meta name="pages" content="${range}"> and write enough real substance to fill it.${depth.key === "book" ? " It's a book: a title page, a table of contents, then one chapter per part, each teaching its topic from zero, step by step, with nothing skipped." : ""}`;
+    }
+    if (phase === "split") context += splitInstructions(depth ?? depthPreferred);
+    // The researchers' notes are what the report is planned and written from.
+    const researchNotes = settings.research && settings.research.current >= settings.research.questions.length ? findingsText(settings.research) : "";
+    if (researchNotes && (phase === "plan" || phase === "build" || phase === "check")) {
+      context += `\n\n## Research findings\nThe research is done: ${settings.research!.questions.length} researchers each covered one part and saved these notes. Build the report from them, citing the [S#] IDs exactly as they appear; search again only for a specific gap.\n${researchNotes}`;
     }
     const carriedThought = settings.partialThought ?? "";
     if (carriedThought) {
       context += `\n\nThe time limit cut you off while you were still thinking this through, before you acted. Your reasoning so far:\n"""\n${carriedThought}\n"""\n${phase === "plan" ? "Don't start over: take it from there and call submit_plan now, keeping any further thinking brief." : "Don't start over or re-plan: take it from there and start building now (write_file first, append_file for the rest), keeping any further thinking brief."}`;
     }
-    if (phase === "plan") {
+    if (phase === "plan" && researchNotes) {
+      context +=
+        "\n\n## This step: planning\nThis request is done in three steps, each with its own time: plan (now), build, then a browser check. Plan the report from the findings above, then call submit_plan: the visual direction (palette with hex values, a Google Fonts pairing, print layout), one section per part in the same order (each section's detail lists the key points and the [S#] sources it draws on), the file name, and any charts or tables where there are real numbers. Don't write files in this step.";
+    } else if (phase === "plan") {
       context +=
         "\n\n## This step: planning\nThis request is done in three steps, each with its own time: plan (now), build, then a browser check. In this step, understand the request, research anything you need (web_search / web_fetch), ask_questions only if something essential is unclear, then call submit_plan with a concrete plan: the visual direction (palette with hex values, a Google Fonts pairing, layout), every section with its real content, the file names, and any interactions or tweaks. Don't write files in this step.";
     } else if (phase === "build" && settings.plan) {
@@ -721,6 +750,14 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     let stallCuts = 0;
     let missingNudges = 0;
     let status: "ready" | "paused" = "ready";
+    let researchProgressed = false;
+    // Pausing for the next invocation. Whether this one got anywhere goes with it: the client caps continuations that make no
+    // progress, but a long research run legitimately takes many.
+    const pauseForNext = () =>
+      emit({
+        type: "continue",
+        payload: { progressed: sources.reads > 0 || touched.size > 0 || researchProgressed || !!settings.partial || settings.phase !== phase || !!settings.phaseFresh },
+      });
     // The write_file call being streamed, so a turn cut off by the time limit can hand its partial file to the next round.
     let writing: { path: string; args: string } | null = null;
     const savePartial = async () => {
@@ -760,6 +797,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
           model: currentModel,
           request: findings ? `${requestText()}\n\nFix these problems found by a check of the page in a real browser:\n${String(findings.content).split("\n").filter((l) => l.startsWith("- ")).join("\n")}` : requestText(),
           plan: settings.plan ? planText(settings.plan) : null,
+          research: researchNotes || null,
           notes: [settings.partialThought, notes].filter(Boolean).join("\n\n"),
           currentFile: current ? { path, content: current } : null,
           designSystem: describeSystems(systems),
@@ -839,8 +877,9 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     };
 
     const finish = async (reply: string | null) => {
-      if (settings.phase || settings.plan || settings.buildReply || settings.writer || settings.workingVersions || settings.checkRounds) {
+      if (settings.phase || settings.plan || settings.buildReply || settings.writer || settings.workingVersions || settings.checkRounds || settings.research) {
         delete settings.checkRounds;
+        delete settings.research;
         delete settings.phase;
         delete settings.plan;
         delete settings.buildReply;
@@ -897,6 +936,43 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
           await finish(settings.buildReply || "Done. It's on the canvas.");
         }
       }
+      // The research step runs the researchers, one part after another; the model's own loop doesn't run in it.
+      if (phase === "research" && settings.research) {
+        checkedClean = true;
+        await emit({ type: "note", payload: { text: `Researching ${settings.research.questions.length} parts, one at a time, with no limit on reading.` } });
+        const out = await runResearchers({
+          state: settings.research,
+          save: async () => {
+            await db.from("projects").update({ settings }).eq("id", projectId);
+          },
+          model: () => currentModel,
+          sources,
+          emit,
+          deadline: deadline - STOP_MARGIN_MS,
+          signal,
+          brief: [requestText(), ...recent.filter((m) => m.role === "user" && m.meta?.answers).map((m) => `Scoping answers:\n${m.content}`)].join("\n\n"),
+          depth,
+          stillOwner,
+        }).catch(async (e) => {
+          await emit({ type: "error", payload: { message: e instanceof Error ? e.message : String(e), detail: { phase: "research", model: currentModel } } });
+          return null;
+        });
+        researchProgressed = !!out?.progressed;
+        // Stopped: the parts and notes so far are kept, so "continue" picks the research back up.
+        if (out?.outcome === "stopped") await emit({ type: "note", payload: { text: "Research stopped. Notes so far are kept; say \"continue\" to carry on." } });
+        else if (out?.outcome === "done") {
+          settings.phase = "plan";
+          settings.phaseFresh = true;
+          await db.from("projects").update({ settings }).eq("id", projectId);
+          const read = settings.research.questions.reduce((n, q) => n + q.read.length, 0);
+          await emit({ type: "note", payload: { text: `Research done: ${settings.research.questions.length} parts, ${read} sources read in full. Planning the report next.` } });
+          status = "paused";
+          await pauseForNext();
+        } else if (out?.outcome === "paused") {
+          status = "paused";
+          await pauseForNext();
+        }
+      }
       for (let step = 0; step < MAX_STEPS && !checkedClean; step++) {
         if (signal.aborted) {
           await finish(touched.size ? "Stopped. What's on the canvas so far is saved." : null);
@@ -904,7 +980,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
         }
         if (deadline - Date.now() < STOP_MARGIN_MS) {
           status = "paused";
-          await emit({ type: "continue", payload: {} });
+          await pauseForNext();
           break;
         }
         if (!(await stillOwner())) {
@@ -926,7 +1002,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
         const writerMode = !!settings.writer || phase === "build" || phase === "check";
         // Re-checked every second once past the limit: slow thinkers may not have written much yet when it's first reached.
         // A model known to reason even with thinking off can't write without some thinking first, so it starts with the edit limit.
-        const baseLimit = writerMode ? (ignoresThinkingOff(currentModel) ? THINK_LIMIT_MS : WRITER_THINK_MS) : phase === "plan" ? PLAN_THINK_MS : THINK_LIMIT_MS;
+        const baseLimit = writerMode ? (ignoresThinkingOff(currentModel) ? THINK_LIMIT_MS : WRITER_THINK_MS) : phase === "plan" || phase === "split" ? PLAN_THINK_MS : THINK_LIMIT_MS;
         const thinkLimit = baseLimit * 2 ** Math.min(thinkCuts, MAX_THINK_CUTS);
         const cutting = thinkCuts < MAX_THINK_CUTS;
         // A model that drafts the deliverable inside its reasoning (the whole HTML and CSS) burns the time budget and starts
@@ -1031,7 +1107,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             await emit({ type: "note", payload: { text: `${MODELS[currentModel].label} stopped responding partway through; asking again.` } });
             if (settings.partial || deadline - Date.now() < 60_000) {
               status = "paused";
-              await emit({ type: "continue", payload: {} });
+              await pauseForNext();
               break;
             }
             continue;
@@ -1050,7 +1126,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             const onlyReplyLeft = !!settings.pendingCheck && !settings.partial && phase !== "build";
             if (onlyReplyLeft) {
               r = { content: "Done. It's on the canvas.", reasoning: "", toolCalls: [], finish: "stop", usage: null };
-            } else if (phase !== "plan" && !asking) {
+            } else if (phase !== "plan" && phase !== "split" && !asking) {
               settings.writer = true;
               const written = await writeFresh(plan);
               if (written) {
@@ -1064,6 +1140,8 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
                 content:
                   asking
                     ? `You've thought enough. Call ask_questions now with the form described above, in this reply, and nothing else. Your thinking so far:\n"""\n${draft}\n"""`
+                    : phase === "split"
+                    ? `You've thought enough. Call split_research now with the parts, in this reply, and nothing else. Your thinking so far:\n"""\n${draft}\n"""`
                     : phase === "plan"
                     ? `You've thought enough; time to hand in the plan. Your thinking so far:\n"""\n${draft}\n"""\nCall submit_plan now with a concrete plan based on it. Keep any further thinking to a few sentences.`
                     : `Stop thinking and write. Your notes so far:\n"""\n${draft}\n"""\nCall write_file now with the <head>, the styles and the first sections only (about 4,000 to 6,000 characters), then continue with append_file for the next sections, in parts.`,
@@ -1082,7 +1160,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
               await db.from("projects").update({ settings }).eq("id", projectId);
             }
             status = "paused";
-            await emit({ type: "continue", payload: {} });
+            await pauseForNext();
             break;
           }
           await emit({
@@ -1127,6 +1205,11 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             }
           }
         }
+        // The orchestrator never listed its parts: research the request as one part rather than ending without a report.
+        if (!r.toolCalls.length && phase === "split") {
+          await emit({ type: "note", payload: { text: "No parts were given; researching the request as one part." } });
+          r.toolCalls = [{ id: `split-fallback-${step}`, name: "split_research", args: JSON.stringify({ parts: [{ question: requestText().slice(0, 400) }] }) }];
+        }
         const text = r.content.trim();
         if (!r.toolCalls.length) {
           // Never hand back unverified work: check the last written file in a real browser and send real problems back to the model.
@@ -1151,7 +1234,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             settings.buildReply = removeEmDashes(replyWithoutCode(text, true)).slice(0, 600);
             await db.from("projects").update({ settings }).eq("id", projectId);
             status = "paused";
-            await emit({ type: "continue", payload: {} });
+            await pauseForNext();
             break;
           }
           const tooLate = deadline - Date.now() < CHECK_MIN_MS;
@@ -1168,7 +1251,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
               if (phase === "check") settings.phaseFresh = true;
               await db.from("projects").update({ settings }).eq("id", projectId);
               status = "paused";
-              await emit({ type: "continue", payload: {} });
+              await pauseForNext();
               break;
             }
             // After two rounds of fixes the last version is still checked, but only to report on, so the loop always ends.
@@ -1231,6 +1314,12 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
         for (const [i, tc] of r.toolCalls.entries()) {
           const callId = `${step}-${i}-${tc.id || ""}`;
           const toolCallId = tc.id || `call_${step}_${i}`;
+          // One action at a time: only a reply's first tool call runs. The rest are answered without running, so the model
+          // makes them (or doesn't) one by one, each after seeing the result of the last.
+          if (i > 0) {
+            convo.push({ role: "tool", tool_call_id: toolCallId, content: JSON.stringify({ error: "Not run: one action at a time. Make this call in your next reply if you still need it." }) });
+            continue;
+          }
           let result: unknown;
           let args: any = {};
           try {
@@ -1379,6 +1468,19 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
                 summary = { dsName: saved.name, system: saved };
                 break;
               }
+              case "split_research": {
+                if (phase !== "split") throw new Error("split_research is only for the research split step");
+                settings.research = cleanSplit(args, depth ?? depthPreferred);
+                settings.phase = "research";
+                settings.phaseFresh = true;
+                await db.from("projects").update({ settings }).eq("id", projectId);
+                const parts = settings.research.questions;
+                await emit({ type: "note", payload: { text: `Split into ${parts.length} parts, each with its own researcher:\n${parts.map((q, n) => `${n + 1}. ${q.question}`).join("\n")}` } });
+                result = { ok: true, note: "Saved. The researchers start next, one part at a time." };
+                summary = { parts: parts.map((q) => q.question) };
+                planned = true;
+                break;
+              }
               case "submit_plan": {
                 const plan = cleanPlan(args);
                 settings.plan = plan;
@@ -1395,7 +1497,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
               case "ask_questions": {
                 const cleaned = cleanQuestions(args.questions);
                 const questions =
-                  template.id === "research" ? withDepthQuestion(cleaned) : mustAsk && !cleaned.some((q) => q.id === "scope" || /\bhow (deep|long|many|detailed|complete|much)\b/i.test(q.question)) ? [scopeQuestion(template), ...cleaned].slice(0, 8) : cleaned;
+                  template.id === "research" ? withDepthQuestion(cleaned, depthPreferred) : mustAsk && !cleaned.some((q) => q.id === "scope" || /\bhow (deep|long|many|detailed|complete|much)\b/i.test(q.question)) ? [scopeQuestion(template), ...cleaned].slice(0, 8) : cleaned;
                 if (!questions.length) throw new Error("no questions given");
                 await emit({ type: "questions", payload: { intro: String(args.intro ?? "").slice(0, 300), questions } });
                 result = { ok: true, note: "The user will answer in their next message." };
@@ -1422,7 +1524,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
         // The plan is in (or a clip needs more time than is left): this invocation ends and the next starts fresh, with its own time budget.
         if (planned || yieldForVideo) {
           status = "paused";
-          await emit({ type: "continue", payload: {} });
+          await pauseForNext();
           break;
         }
         if (badCalls > 5) {
@@ -1433,7 +1535,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
       }
     } finally {
       settled = true;
-      await touch({ status, budget: { ...(project.budget ?? {}), searchesLeft: sources.searchesLeft } });
+      await touch({ status });
       await codeSandbox.stop();
       await emit({ type: "done", payload: {} });
     }

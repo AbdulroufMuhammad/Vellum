@@ -5,7 +5,7 @@
  * rest of the pipeline sees what it would have seen had the model called the tool properly.
  */
 
-export type SalvagedCall = { name: "submit_plan" | "write_file"; args: Record<string, unknown>; why: string };
+export type SalvagedCall = { name: "submit_plan" | "write_file" | "split_research"; args: Record<string, unknown>; why: string };
 
 /** A balanced {...} starting at `start`, ignoring braces inside strings; null if it never closes. */
 function balancedObject(text: string, start: number): string | null {
@@ -72,6 +72,16 @@ export function htmlFromText(text: string): string | null {
  */
 export function salvageToolCall(text: string, ctx: { phase?: string; hasPlan: boolean; wroteFile: boolean; filePath: string }): SalvagedCall | null {
   if (!text || text.length < 200) return null;
+  if (ctx.phase === "split") {
+    // The parts listed in the chat: numbered or bulleted lines, each a question or a topic.
+    const parts = text
+      .split("\n")
+      .map((l) => /^\s*(?:\d+[.)]|[-*•])\s+(?:\*\*)?(.{8,400}?)(?:\*\*)?\s*$/.exec(l)?.[1])
+      .filter((l): l is string => !!l)
+      .map((question) => ({ question }));
+    if (parts.length >= 2) return { name: "split_research", args: { parts }, why: "The parts were listed in the chat instead of being submitted; submitting them." };
+    return null;
+  }
   if (ctx.phase === "plan" && !ctx.hasPlan) {
     const plan = planFromText(text);
     if (plan) return { name: "submit_plan", args: plan, why: "The plan was written into the chat instead of being submitted; submitting it." };
@@ -86,6 +96,8 @@ export function salvageToolCall(text: string, ctx: { phase?: string; hasPlan: bo
 
 /** When no call can be recovered: whether the reply is the kind a step must never end with, and what to tell the model. */
 export function missingCallNudge(ctx: { phase?: string; hasPlan: boolean; wroteFile: boolean }): string | null {
+  if (ctx.phase === "split")
+    return "You answered in text, but this step ends only when you call the split_research tool. Call split_research now with the parts (each a question and a focus), and nothing else.";
   if (ctx.phase === "plan" && !ctx.hasPlan)
     return "You answered in text, but this step ends only when you call the submit_plan tool. Do not write the plan into the chat: call submit_plan now with title, summary, direction, sections (each with name and detail) and files.";
   if (ctx.phase === "build" && !ctx.wroteFile)

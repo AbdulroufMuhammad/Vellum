@@ -11,7 +11,9 @@ export type AgentEvent = {
    * written, the final reply — which is stored in `messages` instead).
    * continue: this invocation ran out of time with work left, or finished a
    * step (plan, build) with the next one to go; the client re-POSTs with resume:true.
-   * phase: a new step of a split request starts (payload.name: plan | build | check).
+   * payload.progressed: it got further (sources read, notes saved, a part or a
+   * file written), so the client doesn't count it against its continuation cap.
+   * phase: a new step of a split request starts (payload.name: split | research | plan | build | check).
    * plan: the plan the planning step handed in (payload.plan).
    */
   type: "thought" | "reasoning" | "note" | "tool-call" | "tool-result" | "questions" | "error" | "done" | "continue" | "token" | "draft" | "message" | "phase" | "plan";

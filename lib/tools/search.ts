@@ -38,28 +38,20 @@ async function extractPdfText(url: string): Promise<string> {
  */
 export class SourceRegistry {
   sources = new Map<string, Source>();
-  searchesLeft: number;
-  /** Searches + fetches allowed in the current turn; keeps the agent from researching instead of designing. */
-  turnLimit = 6;
-  turnUsed = 0;
+  /** Searches and fetches made in this invocation. Only counted, never capped: the search service is self-hosted. */
+  reads = 0;
 
-  private constructor(private db: SupabaseClient, private projectId: string, searchesLeft: number) {
-    this.searchesLeft = searchesLeft;
-  }
+  private constructor(private db: SupabaseClient, private projectId: string) {}
 
-  static async load(db: SupabaseClient, projectId: string, budget: any) {
-    const reg = new SourceRegistry(db, projectId, Number(budget?.searchesLeft ?? 40));
+  static async load(db: SupabaseClient, projectId: string) {
+    const reg = new SourceRegistry(db, projectId);
     const { data } = await db.from("sources").select("short_id, url, title, text").eq("project_id", projectId);
     for (const s of data ?? []) reg.sources.set(s.short_id, { url: s.url, title: s.title ?? undefined, text: s.text ?? undefined });
     return reg;
   }
 
   private spend() {
-    if (this.searchesLeft <= 0) throw new Error("the search budget for this project is used up; continue with what you have");
-    if (this.turnUsed >= this.turnLimit)
-      throw new Error(`that's this turn's research allowance (${this.turnLimit}); write with what you have now`);
-    this.searchesLeft -= 1;
-    this.turnUsed += 1;
+    this.reads += 1;
   }
 
   private async register(url: string, title?: string, text?: string) {

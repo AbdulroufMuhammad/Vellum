@@ -19,6 +19,9 @@
  *                 the page must be written by the fresh writing session, which streams it, not as a write_file call.
  *   stalls-mid-answer  the endpoint goes quiet halfway through streaming write_file (NVIDIA does, now and then): the part written
  *                 is kept and the next round appends the rest. Must end with the whole page, not "model stopped responding".
+ *   research      a Research request whose pasted template steps mention "a quick overview": it must ask the scoping form
+ *                 first (no searching), then split into parts, run one researcher per part in order (each reply asks for two
+ *                 tool calls; only the first may run), and plan, build and check the report from their cited notes.
  *
  * The check step really renders the page in headless Chromium (set CHROMIUM_PATH to a Chromium binary).
  *
@@ -107,6 +110,19 @@ const planObj = {
 const pageHtml = `<!doctype html><html><head><meta charset="utf-8"><title>Superbio Invoice</title><style>body{font:15px/1.5 Georgia,serif;margin:0;padding:32px;background:#fbf9f4;color:#1f1b16}h1{font-size:28px;margin:0 0 4px}table{width:100%;border-collapse:collapse;margin-top:24px}td,th{padding:10px 6px;border-bottom:1px solid #d9d2c3;text-align:left}.n{text-align:right}.due{margin-top:24px;padding:16px;border:1px solid #b68235;background:#f4ead4;display:flex;justify-content:space-between;font-size:20px}</style></head><body><h1>Superbio Studio</h1><p>418 Meridian Lane, Portland, OR 97209 · Invoice SB-2047 · Issued 9 Oct 2026 · Due 8 Nov 2026</p><table><thead><tr><th>Description</th><th class="n">Qty</th><th class="n">Rate</th><th class="n">Amount</th></tr></thead><tbody><tr><td>Brand identity refinement</td><td class="n">1</td><td class="n">$4,780.00</td><td class="n">$4,780.00</td></tr><tr><td>Compostable pouch dieline</td><td class="n">3</td><td class="n">$950.00</td><td class="n">$2,850.00</td></tr><tr><td>Label artwork per SKU</td><td class="n">4</td><td class="n">$420.00</td><td class="n">$1,680.00</td></tr></tbody></table><div class="due"><span>Balance due</span><strong>$7,310.00</strong></div><p>${"Payment is due within thirty days of the issue date by bank transfer, card or check. ".repeat(6)}</p></body></html>`;
 
 const requests: { kind: string; reply: string }[] = [];
+let researchSawFindings = false;
+const reportHtml = `<!doctype html><html><head><meta charset="utf-8"><meta name="pages" content="1-2"><title>System Design Primer</title><style>@page{size:letter;margin:0.75in}body{font:15px/1.6 Georgia,serif;margin:0;padding:32px;background:#fbf9f4;color:#1f1b16}h1{font-size:30px}h2{font-size:20px;margin-top:28px}</style></head><body><h1>System Design Primer</h1><h2>Caching</h2><p>${"Caches keep copies of hot data close to readers so most requests never reach the database [S1]. ".repeat(8)}</p><h2>Databases</h2><p>${"Replicas spread reads while shards split writes across machines [S1]. ".repeat(8)}</p></body></html>`;
+// fake Seekly: every query gets two results, every page some text
+const searchServer = http.createServer((req, res) => {
+  const u = new URL(req.url ?? "/", "http://x");
+  res.writeHead(200, { "Content-Type": "application/json" });
+  if (u.pathname === "/v1/search") {
+    const q = u.searchParams.get("q") ?? "";
+    const slug = q.toLowerCase().replace(/[^a-z]+/g, "-");
+    return res.end(JSON.stringify({ results: [1, 2].map((n) => ({ url: `https://example.org/${slug}/${n}`, title: `${q} (${n})`, content: `About ${q}.` })) }));
+  }
+  res.end(JSON.stringify({ content: `Full text of ${u.searchParams.get("url")}.` }));
+});
 function sse(res: http.ServerResponse, chunks: any[]) {
   res.writeHead(200, { "Content-Type": "text/event-stream" });
   for (const c of chunks) res.write(`data: ${JSON.stringify({ choices: [{ delta: c, finish_reason: null }] })}\n\n`);
@@ -137,6 +153,42 @@ const modelServer = http.createServer((req, res) => {
     const last = String(msgs[msgs.length - 1]?.content ?? "");
     const toolNames: string[] = (body.tools ?? []).map((t: any) => t.function.name);
     const reply = (kind: string, chunks: any[], note = "") => { requests.push({ kind, reply: note }); sse(res, chunks); };
+    if (scenario === "research" && toolNames.length) {
+      const sys = String(msgs[0]?.content ?? "");
+      if (toolNames.includes("ask_questions") && text.includes("## First: ask"))
+        return reply("ask", toolCall("ask_questions", { questions: [{ id: "level", question: "How detailed should it be?", type: "single", options: ["Short", "Long"] }, { id: "focus", question: "Which areas?", type: "multi", options: ["Caching", "Databases"] }] }), "ask_questions");
+      if (toolNames.includes("split_research"))
+        return reply("split", toolCall("split_research", { parts: [{ question: "What is caching?", focus: "cache-aside, TTLs" }, { question: "How do databases scale?", focus: "replication, sharding" }, { question: "How do load balancers work?" }] }), "split_research");
+      if (toolNames.includes("finish_part")) {
+        const part = /## Your part\n(.+)/.exec(sys)?.[1] ?? "?";
+        // RESEARCH_DELAY_MS slows each researcher reply, so a short TURN_BUDGET_MS pauses researchers mid-part; a resumed
+        // researcher picks up from what its opening message says it already did.
+        if (process.env.RESEARCH_DELAY_MS) await new Promise((r) => setTimeout(r, Number(process.env.RESEARCH_DELAY_MS)));
+        const opening = String(msgs[1]?.content ?? "");
+        const done = /Your notes so far/.test(opening) ? 3 : /You already read/.test(opening) ? 2 : /You already searched/.test(opening) ? 1 : 0;
+        const turns = msgs.filter((m) => m.role === "assistant").length + done;
+        const results = msgs.filter((m) => m.role === "tool").map((m) => { try { return JSON.parse(m.content); } catch { return null; } });
+        const hits = results.find((r) => Array.isArray(r)) as any[] | undefined;
+        if (turns === 0) {
+          // two calls in one reply: only the first may run
+          requests.push({ kind: "research-2calls", reply: part });
+          return sse(res, [{ tool_calls: [
+            { index: 0, id: "call_a" + randomUUID().slice(0, 6), type: "function", function: { name: "web_search", arguments: JSON.stringify({ query: part }) } },
+            { index: 1, id: "call_b" + randomUUID().slice(0, 6), type: "function", function: { name: "web_search", arguments: JSON.stringify({ query: part + " second" }) } },
+          ] }]);
+        }
+        if (turns === 1) return reply("research-fetch", toolCall("web_fetch", { source_id: hits?.[0]?.id ?? "S1" }), part);
+        if (turns === 2) return reply("research-notes", toolCall("add_findings", { notes: `${part} is answered by this source in detail [${hits?.[0]?.id ?? "S1"}].` }), part);
+        return reply("research-finish", toolCall("finish_part", { summary: "Covered." }), part);
+      }
+      if (text.includes("## This step: planning")) {
+        researchSawFindings ||= text.includes("## Research findings") && /is answered by this source in detail \[S\d+\]/.test(text);
+        return reply("plan", toolCall("submit_plan", { ...planObj, title: "System Design Primer", files: ["System Design Primer.html"], sections: [{ name: "Caching", detail: "[S1]" }] }), "submit_plan");
+      }
+      if (text.includes("## This step: building") && msgs[msgs.length - 1]?.role !== "tool")
+        return reply("build", toolCall("write_file", { path: "System Design Primer.html", content: reportHtml }), "write_file");
+      return reply("other", [{ content: "Wrote the report." }], "short reply");
+    }
     // the fresh writing session: no tools, its own short system prompt, the page comes back as plain HTML
     const writer = !toolNames.length && String(msgs[0]?.content ?? "").startsWith("You write one complete, self-contained HTML document");
     if (writer) {
@@ -213,6 +265,8 @@ async function main() {
   } else {
     await new Promise<void>((r) => modelServer.listen(PORT, r));
     process.env.NVIDIA_BASE_URL = `http://localhost:${PORT}`; process.env.NVIDIA_API_KEY = "test";
+    await new Promise<void>((r) => searchServer.listen(PORT + 200, r));
+    process.env.SEEKLY_API_URL = `http://localhost:${PORT + 200}`; process.env.SEEKLY_API_KEY = "test";
   }
   process.env.NEXT_PUBLIC_SUPABASE_URL = "http://fake.local"; process.env.SUPABASE_SERVICE_ROLE_KEY = "test";
   process.env.CHROMIUM_PATH ??= "/opt/pw-browsers/chromium-1194/chrome-linux/chrome";
@@ -223,6 +277,7 @@ async function main() {
   const { runTurn } = await import("../lib/agent");
 
   const projectId = randomUUID();
+  if (scenario === "research") return research(runTurn, projectId);
   tables.projects.push({ id: projectId, title: "Create an invoice demo for Superbio", template: "blank", model_profile: process.env.MODEL ?? (["thinks-then-writes", "edit-reasons", "glm-build", "real"].includes(scenario) ? "glm" : "gpt-oss"), design_system_id: null, goal: "Create an invoice demo for Superbio", status: "idle", budget: { tokensLeft: 200000, searchesLeft: 40, rounds: 0, maxRounds: 3 }, settings: {}, codebase: null, run_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
   tables.messages.push({ id: randomUUID(), project_id: projectId, role: "user", content: "Create an invoice demo for Superbio", meta: {}, created_at: new Date(Date.now() - 2000).toISOString() });
   tables.messages.push({ id: randomUUID(), project_id: projectId, role: "user", content: "How deep should this go?\n→ Standard", meta: { answers: { scope: "Standard" } }, created_at: new Date(Date.now() - 1000).toISOString() });
@@ -289,4 +344,61 @@ async function main() {
   console.log(ok ? "RESULT: ok" : "RESULT: FAILED (" + (!wrote && expectFile ? "no file saved" : "code was left in the chat") + ")");
   process.exit(ok ? 0 : 1);
 }
+/** The research scenario: an ask-only first turn, then the answered form runs split → research → plan → build → check. */
+async function research(runTurn: typeof import("../lib/agent").runTurn, projectId: string) {
+  const { getTemplate } = await import("../lib/templates");
+  const steps = getTemplate("research").prefill?.steps ?? [];
+  const goal = `Research .create an extensive book on system design like it would be used to teach a donkey full book no skipping .\n\nProcess:\n${steps.map((x, i) => `${i + 1}. ${x}`).join("\n")}`;
+  tables.projects.push({ id: projectId, title: "System design", template: "research", model_profile: process.env.MODEL ?? "gpt-oss", design_system_id: null, goal, status: "idle", budget: { searchesLeft: 0 }, settings: {}, codebase: null, run_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+  tables.messages.push({ id: randomUUID(), project_id: projectId, role: "user", content: goal, meta: {}, created_at: new Date(Date.now() - 5000).toISOString() });
+  const log: string[] = [];
+  const events: any[] = [];
+  const run = async (resume: boolean) => {
+    let sawContinue = false;
+    await runTurn(fakeDb, projectId, {
+      resume,
+      onEvent: (e) => {
+        events.push(e);
+        if (e.type === "continue") sawContinue = true;
+        const p: any = e.payload;
+        if (e.type === "error") log.push(`  ! error: ${p.message}`);
+        if (["phase", "note", "tool-call", "tool-result", "questions", "continue"].includes(e.type))
+          log.push(`  ${e.type}${p?.name ? " " + p.name : ""}${p?.text ? ": " + String(p.text).slice(0, 100).replace(/\s+/g, " ") : ""}${p?.error ? " ERROR " + String(p.error).slice(0, 90) : ""}${e.type === "continue" ? ` progressed=${p?.progressed}` : ""}`);
+      },
+    });
+    return sawContinue;
+  };
+  // 1. the request alone: it must ask, with the depth question first and "Full book" preselected, and not search
+  await run(false);
+  log.push("-- first turn ended");
+  const form: any = events.find((e) => e.type === "questions")?.payload;
+  const asked = !!form && form.questions[0]?.id === "depth" && /Full book/.test(form.questions[0]?.default ?? "") && !form.questions.some((q: any) => q.id === "level");
+  const searchedEarly = events.some((e) => e.type === "tool-call" && /web_/.test((e.payload as any).name));
+  // 2. the answers
+  tables.messages.push({ id: randomUUID(), project_id: projectId, role: "user", content: "How deep should the research go?\n→ Full book (20–40 pages, every topic, no skipping)", meta: { answers: { depth: "Full book (20–40 pages, every topic, no skipping)", focus: "Caching, Databases" } }, created_at: new Date().toISOString() });
+  let resume = false;
+  for (let i = 0; i < 40; i++) {
+    const more = await run(resume);
+    log.push(`-- invocation ${i + 1} ended (${more ? "continue" : "done"})`);
+    if (!more) break;
+    resume = true;
+  }
+  const order = requests.filter((r) => r.kind.startsWith("research-")).map((r) => r.reply);
+  const sequential = order.join("|") === order.slice().sort((a, b) => ["What is caching?", "How do databases scale?", "How do load balancers work?"].indexOf(a) - ["What is caching?", "How do databases scale?", "How do load balancers work?"].indexOf(b)).join("|");
+  const searches = events.filter((e) => e.type === "tool-call" && (e.payload as any).name === "web_search").length;
+  const files = tables.files.filter((f) => f.project_id === projectId);
+  const final = tables.messages.filter((m) => m.role === "assistant").pop();
+  console.log(`\n=== scenario: research ===\n${log.join("\n")}`);
+  console.log(`\nmodel requests: ${requests.map((r) => r.kind).join(" > ")}`);
+  console.log(`files written: ${files.map((f) => `${f.path} v${f.version}`).join(", ") || "NONE"}`);
+  console.log(`final chat reply: ${JSON.stringify((final?.content ?? "").slice(0, 140))}`);
+  const checks = { asked, noEarlySearch: !searchedEarly, oneCallPerReply: process.env.RESEARCH_DELAY_MS ? true : searches === 3, sequential, findingsReachedPlan: researchSawFindings, wroteReport: files.length > 0 };
+  console.log(checks);
+  const ok = Object.values(checks).every(Boolean);
+  console.log(ok ? "RESULT: ok" : "RESULT: FAILED");
+  modelServer.close();
+  searchServer.close();
+  process.exit(ok ? 0 : 1);
+}
+
 main().catch((e) => { console.error(e); process.exit(2); });

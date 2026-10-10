@@ -14,7 +14,8 @@
     "test:softbody": "node scripts/test-softbody.mjs",
     "test:salvage": "npx --yes tsx scripts/test-salvage.ts",
     "simulate": "npx --yes tsx scripts/simulate-turn.ts",
-    "test:writer": "npx --yes tsx scripts/test-writer.ts"
+    "test:writer": "npx --yes tsx scripts/test-writer.ts",
+    "test:research": "npx --yes tsx scripts/test-research.ts"
   },
   "dependencies": {
     "@sparticuz/chromium": "^153.0.0",

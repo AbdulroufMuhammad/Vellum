@@ -46,7 +46,7 @@ type Pick = { id: string | null; tag: string; text: string; html: string; rect: 
 type Selection = { id: string; tag: string; style: ElementStyle };
 
 const ZOOMS = [50, 75, 100, 125, 150];
-// A split request uses two continuations (plan → build → check) on top of any time-limit resumes.
+// Continuations in a row that made no progress (a round that got further resets the count; see the "continue" event).
 const MAX_CONTINUATIONS = 10;
 let tempId = 0;
 
@@ -243,6 +243,9 @@ export default function ProjectView({ initial, systems, models }: { initial: Pro
         }
         case "continue":
           willContinue.current = true;
+          // A round that got further (sources read, notes saved, a file written) doesn't count against the cap: a long
+          // research run takes many rounds. The cap only stops rounds that keep pausing without getting anywhere.
+          if (p?.progressed) continuations.current = 0;
           return;
         case "done":
           return;

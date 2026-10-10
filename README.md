@@ -246,10 +246,18 @@ read-only file, render and export endpoints they use).
   the request leaves open. Design tools are blocked until it's asked; the form
   has "Skip, use your judgement". Small edits, element comments and messages
   that say not to ask go straight through.
-- **Research depth** — a research project is scoped first with a form that
-  always asks how deep to go (quick overview, standard report or deep dive,
-  `lib/research.ts`); the choice sets the sources read per turn and the
-  report's printed page count.
+- **Research** — a research project always opens with a scoping form (the
+  agent never skips it; words like "a full book" or "quick" only preselect the
+  depth). Depths in `lib/research.ts`: quick overview, standard report, deep
+  dive, and full book (20–40 pages, a chapter per part). After the form, an
+  orchestrator splits the request into parts (`split_research`), then one
+  researcher per part runs, strictly one after another
+  (`lib/researchOrchestrator.ts`): a fresh session of the same model that
+  searches and reads with **no limit** until its part is covered, saving cited
+  notes as it goes. Everything is saved per call, so the 300-second invocation
+  limit only pauses a researcher; the next invocation carries on. The notes
+  then go to the usual plan → build → check steps. Every agent makes **one
+  tool call per reply**: extra calls in a reply are answered "not run".
 - **Present & export** — Present slides shows one slide at a time full screen
   with speaker notes; Share exports PDF (printed on the server by Chromium,
   like the check), PNG, PowerPoint and HTML, and
@@ -258,7 +266,7 @@ read-only file, render and export endpoints they use).
   top (fonts, sizes, colors, bold/italic, bullets, speaker notes); "exact look"
   exports each slide as one picture instead.
 - **Long chats** — the last 12 messages go to the model verbatim; older ones as
-  a cached summary. Each turn has a research allowance. A request only ever
+  a cached summary. Research reading is never capped. A request only ever
   uses the model picked; there is no fallback to another model.
 - **Canvas** (`components/project/Canvas.tsx`, `lib/canvasBridge.ts`) — designs
   run in an iframe sandboxed without `allow-same-origin`; a small injected

@@ -285,7 +285,7 @@ function QuestionsCard({ row, disabled, onAnswer }: { row: Extract<Row, { kind: 
   );
 }
 
-const PHASES: Record<string, string> = { plan: "Planning", build: "Building", check: "Checking and fixing" };
+const PHASES: Record<string, string> = { split: "Splitting the research", research: "Researching", plan: "Planning", build: "Building", check: "Checking and fixing" };
 
 function PhaseDivider({ name }: { name: string }) {
   return (

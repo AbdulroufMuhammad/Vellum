@@ -30,6 +30,8 @@ export type WriteDocumentOpts = {
   request: string;
   /** The plan, as text, when there is one. */
   plan?: string | null;
+  /** A research report's findings, saved by its researchers with [S#] citations. */
+  research?: string | null;
   /** The thinking that led here (the full reasoning, not just its end). */
   notes?: string | null;
   /** For an edit: the file as it is now. */
@@ -102,6 +104,7 @@ function closeDocument(doc: string) {
 function firstMessage(o: WriteDocumentOpts) {
   const parts = [`What the user asked for:\n${o.request.trim()}`];
   if (o.plan) parts.push(`The plan (follow it faithfully):\n${o.plan}`);
+  if (o.research?.trim()) parts.push(`The research findings to write it from (use them in full and cite the [S#] IDs exactly as given; never invent one):\n${o.research.trim()}`);
   if (o.notes?.trim()) parts.push(`Your design thinking for this, already done (use these decisions; don't redo them):\n"""\n${clip(o.notes.trim(), MAX_NOTES)}\n"""`);
   if (o.designSystem?.trim()) parts.push(`Design system:\n${o.designSystem.trim()}`);
   if (o.media?.trim()) parts.push(`Already generated for this (use these URLs as they are):\n${o.media.trim()}`);
