@@ -45,3 +45,11 @@ assert.equal(listed?.name, "split_research");
 assert.equal((listed?.args.parts as any[]).length, 4);
 
 console.log("research tests passed");
+
+// A split the model never gave: built from the user's focus areas, padded to the depth's minimum, never one part.
+import { fallbackSplit } from "@/lib/researchOrchestrator";
+const fb = fallbackSplit("Research system design", ["Caching", "Databases"], book);
+assert.ok(fb.questions.length >= book.parts[0]);
+assert.match(fb.questions[0].question, /^Caching/);
+assert.equal(fallbackSplit("x", [], null).questions.length, 3);
+console.log("fallback split tests passed");

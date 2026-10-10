@@ -21,6 +21,8 @@ export type SubQuestion = {
   /** What this part has to cover, from the orchestrator. */
   focus: string;
   status: "pending" | "done";
+  /** The researcher's own two-or-three sentence answer (finish_part). */
+  summary: string;
   /** Cited notes ([S#]), appended by add_findings. */
   findings: string;
   queries: string[];
@@ -80,6 +82,11 @@ const FINISH: ToolSchema = {
 
 const RESEARCHER_TOOLS = [...WEB_TOOL_SCHEMAS, ADD_FINDINGS, FINISH] as ToolSchema[];
 
+const THINK_CUT_MS = Number(process.env.RESEARCHER_THINK_MS ?? 45_000);
+class ResearcherThinkCut extends Error {
+  name = "ResearcherThinkCut";
+}
+
 /** Tool calls in a row with nothing new before the researcher is told to finish, and then closed. */
 const STALL_LIMIT = 15;
 /** Everything the researchers noted, as handed to the planner and writer; enough for a whole book, and still inside the model's context. */
@@ -100,8 +107,93 @@ export function cleanSplit(args: any, depth: ResearchDepth | null): ResearchStat
   if (!parts.length) throw new Error("give at least one part, each with a question");
   return {
     current: 0,
-    questions: parts.map((p: { question: string; focus: string }, i: number) => ({ id: `P${i + 1}`, ...p, status: "pending", findings: "", queries: [], read: [], idle: 0 })),
+    questions: parts.map((p: { question: string; focus: string }, i: number) => ({ id: `P${i + 1}`, ...p, status: "pending", summary: "", findings: "", queries: [], read: [], idle: 0 })),
   };
+}
+
+/** Generic chapters, for padding a split that came back too thin. */
+const SKELETON = [
+  "The big picture: what it is, why it exists and the words you need",
+  "How it works, step by step, from the very beginning",
+  "Worked examples built up in small steps",
+  "Trade-offs, common mistakes and how to avoid them",
+  "The building blocks, one at a time, each with a picture in words",
+  "How the pieces talk to each other and what happens when one breaks",
+  "Doing it at larger scale: what changes when there is more of everything",
+  "Real-world case studies, explained step by step",
+  "Putting it together: a complete walk-through and what to learn next",
+];
+
+/**
+ * A split built from the user's own answers, for when the model gave no usable one: each focus area they ticked becomes
+ * a part, padded with generic chapters up to the depth's minimum. Never "the whole request as one part".
+ */
+export function fallbackSplit(request: string, focusAreas: string[], depth: ResearchDepth | null): ResearchState {
+  const topic = request.replace(/\s+/g, " ").trim().slice(0, 160);
+  const parts = focusAreas.map((f) => ({ question: `${f} (for: ${topic})`, focus: "" }));
+  for (const g of SKELETON) if (parts.length < (depth?.parts[0] ?? 3)) parts.push({ question: `${g} (for: ${topic})`, focus: "" });
+  return cleanSplit({ parts }, depth);
+}
+
+type Parts = { question: string; focus?: string }[];
+
+/** Numbered or bulleted lines of a plain-text answer, as parts. */
+function partsFromText(text: string): Parts {
+  return text
+    .split("\n")
+    .map((l) => /^\s*(?:\d+[.)]|[-*•])\s+(?:\*\*)?(.{8,400}?)(?:\*\*)?\s*$/.exec(l)?.[1])
+    .filter((l): l is string => !!l)
+    .map((question) => ({ question }));
+}
+
+/**
+ * The orchestrator's split, as one small focused call instead of a turn of the full agent loop: a fresh session of the
+ * model with only the request, the scoping answers and the instructions, thinking off. In the loop, a reasoning model
+ * spent the whole invocation deliberating over a task that is a single short tool call.
+ */
+export async function runSplit(o: {
+  model: ModelKey;
+  brief: string;
+  depth: ResearchDepth | null;
+  focusAreas: string[];
+  deadline: number;
+  signal: AbortSignal;
+  emit: Emit;
+}): Promise<ResearchState> {
+  const system = `You are the orchestrator of a research team. Your only job is to break a research request into parts that dedicated researchers will each cover. ${ONE_AT_A_TIME}${splitInstructions(o.depth)}`;
+  const user = `${o.brief}\n\nCall split_research now with the parts.`;
+  const ask = async (messages: ChatMessage[], tools: ToolSchema[] | undefined) => {
+    // Bounded on its own, well inside the invocation: if the model dithers, the fallbacks below take over.
+    const ctrl = new AbortController();
+    const onAbort = () => ctrl.abort(o.signal.reason);
+    o.signal.addEventListener("abort", onAbort);
+    const timer = setTimeout(() => ctrl.abort(new Error("split timed out")), Number(process.env.SPLIT_TIMEOUT_MS ?? 60_000));
+    try {
+      return await chat(o.model, { messages, tools, deadline: o.deadline, signal: ctrl.signal, thinking: "off", maxTokens: 3000 });
+    } finally {
+      clearTimeout(timer);
+      o.signal.removeEventListener("abort", onAbort);
+    }
+  };
+  const base: ChatMessage[] = [
+    { role: "system", content: system },
+    { role: "user", content: user },
+  ];
+  try {
+    const r = await ask(base, [SPLIT_SCHEMA]);
+    const tc = r.toolCalls.find((t) => t.name === "split_research");
+    if (tc) return cleanSplit(JSON.parse(tc.args || "{}"), o.depth);
+    const listed = partsFromText(r.content);
+    if (listed.length >= 2) return cleanSplit({ parts: listed }, o.depth);
+    // One retry in plain text.
+    const again = await ask([...base, { role: "assistant", content: r.content.slice(0, 1500) || "…" }, { role: "user", content: "Reply with only the numbered list of parts, one per line, each a specific question." }], undefined);
+    const text = partsFromText(again.content);
+    if (text.length >= 2) return cleanSplit({ parts: text }, o.depth);
+  } catch (e) {
+    if (o.signal.aborted) throw e;
+  }
+  await o.emit({ type: "note", payload: { text: "The model gave no usable split; using your focus areas as the parts." } });
+  return fallbackSplit(o.brief.split("\n")[0] ?? "", o.focusAreas, o.depth);
 }
 
 /** The split step's instructions to the orchestrator. */
@@ -120,6 +212,13 @@ export function findingsText(state: ResearchState): string {
       const notes = q.findings.trim() || "(no findings saved)";
       return `### Part ${i + 1}: ${q.question}\n${notes.length > per ? `${notes.slice(0, per)}\n…` : notes}`;
     })
+    .join("\n\n");
+}
+
+/** A short outline of the research for the planner: each part's question, its researcher's summary and the start of its notes. */
+export function outlineText(state: ResearchState): string {
+  return state.questions
+    .map((q, i) => `### Part ${i + 1}: ${q.question}\n${q.summary ? `${q.summary}\n` : ""}${q.findings.trim().slice(0, 600)}${q.findings.length > 600 ? "…" : ""}\n(${q.read.length} sources read)`)
     .join("\n\n");
 }
 
@@ -208,16 +307,34 @@ export async function runResearchers(o: ResearchRunOpts): Promise<ResearchOutcom
       if (o.deadline - Date.now() < 15_000) return { outcome: "paused", progressed };
       compact(convo);
       let r: ChatResult;
+      // A reply that only reasons (no text, no tool call) for this long is cut and asked again: a researcher's next move
+      // is one search or fetch, and a model that ignores "thinking off" can otherwise deliberate through the whole invocation.
+      const stepCtrl = new AbortController();
+      const onAbort = () => stepCtrl.abort(o.signal.reason);
+      o.signal.addEventListener("abort", onAbort);
+      let acted = false;
+      const started = Date.now();
+      const thinkTimer = setInterval(() => {
+        if (!acted && Date.now() - started > THINK_CUT_MS) stepCtrl.abort(new ResearcherThinkCut());
+      }, 1000);
       try {
         r = await chat(o.model(), {
           messages: convo,
           tools: RESEARCHER_TOOLS,
           deadline: o.deadline,
-          signal: o.signal,
+          signal: stepCtrl.signal,
           thinking: "off",
+          onToken: () => (acted = true),
+          onToolDelta: () => (acted = true),
         });
       } catch (e) {
         if (o.signal.aborted) return { outcome: "stopped", progressed };
+        if (e instanceof ResearcherThinkCut || (e as any)?.name === "ResearcherThinkCut") {
+          if (stalls++ >= 3) break;
+          await emit({ type: "note", payload: { text: `Researcher ${index + 1} was thinking too long; asking again.` } });
+          convo.push({ role: "user", content: "Stop thinking. Make your next tool call now (web_search, web_fetch, add_findings or finish_part), with no more than a sentence of reasoning." });
+          continue;
+        }
         const msg = e instanceof Error ? e.message : String(e);
         if ((e as any)?.name === "TimeoutError" && o.deadline - Date.now() < 30_000) return { outcome: "paused", progressed };
         // An endpoint that went quiet is asked again a couple of times; the notes are saved, so nothing is lost either way.
@@ -227,6 +344,9 @@ export async function runResearchers(o: ResearchRunOpts): Promise<ResearchOutcom
           continue;
         }
         throw e;
+      } finally {
+        clearInterval(thinkTimer);
+        o.signal.removeEventListener("abort", onAbort);
       }
 
       if (r.reasoning.trim()) await emit({ type: "thought", payload: { text: r.reasoning.trim().slice(-12000), ms: 0 } });
@@ -289,6 +409,7 @@ export async function runResearchers(o: ResearchRunOpts): Promise<ResearchOutcom
           }
           case "finish_part": {
             if (!q.findings.trim() && !q.read.length && nudges++ < 2) throw new Error("you haven't researched or saved anything yet: search, read and add_findings first");
+            q.summary = String(args.summary ?? "").trim().slice(0, 800);
             finished = true;
             result = { ok: true };
             break;

@@ -153,7 +153,16 @@ const modelServer = http.createServer((req, res) => {
     const last = String(msgs[msgs.length - 1]?.content ?? "");
     const toolNames: string[] = (body.tools ?? []).map((t: any) => t.function.name);
     const reply = (kind: string, chunks: any[], note = "") => { requests.push({ kind, reply: note }); sse(res, chunks); };
-    if (scenario === "research" && toolNames.length) {
+    // the book writer: one small call for the head, then one per chapter, each with only its own notes
+    if (scenario.startsWith("research") && !toolNames.length && String(msgs[0]?.content ?? "").startsWith("You write part of one self-contained HTML book")) {
+      const u = String(msgs[1]?.content ?? "");
+      const ch = /Write chapter (\d+) of (\d+): ([^\n]+)/.exec(u);
+      requests.push({ kind: ch ? `chapter-${ch[1]}` : "book-head", reply: ch ? `has own notes: ${new RegExp("is answered by this source").test(u)}; notes size ${u.length}` : "" });
+      if (!ch) return sse(res, [{ content: "<!doctype html><html><head><meta charset=\"utf-8\"><title>Book</title><style>@page{size:letter}body{font:15px/1.6 Georgia,serif;padding:32px}.chapter{break-before:page}</style></head><body><h1>The Donkey's Guide</h1><nav>contents</nav>" }]);
+      return sse(res, [{ content: `<section class="chapter" id="ch${ch[1]}"><h2>Chapter ${ch[1]}: ${ch[3]}</h2><p>${"A cache is a small shelf near the kitchen so the cook does not walk to the warehouse every time [S1]. ".repeat(10)}</p></section>` }]);
+    }
+    if (scenario.startsWith("research") && toolNames.includes("split_research") && process.env.SPLIT_HANG) { requests.push({ kind: "split-hang", reply: "" }); return; }
+    if (scenario.startsWith("research") && toolNames.length) {
       const sys = String(msgs[0]?.content ?? "");
       if (toolNames.includes("ask_questions") && text.includes("## First: ask"))
         return reply("ask", toolCall("ask_questions", { questions: [{ id: "level", question: "How detailed should it be?", type: "single", options: ["Short", "Long"] }, { id: "focus", question: "Which areas?", type: "multi", options: ["Caching", "Databases"] }] }), "ask_questions");
@@ -277,7 +286,7 @@ async function main() {
   const { runTurn } = await import("../lib/agent");
 
   const projectId = randomUUID();
-  if (scenario === "research") return research(runTurn, projectId);
+  if (scenario.startsWith("research")) return research(runTurn, projectId);
   tables.projects.push({ id: projectId, title: "Create an invoice demo for Superbio", template: "blank", model_profile: process.env.MODEL ?? (["thinks-then-writes", "edit-reasons", "glm-build", "real"].includes(scenario) ? "glm" : "gpt-oss"), design_system_id: null, goal: "Create an invoice demo for Superbio", status: "idle", budget: { tokensLeft: 200000, searchesLeft: 40, rounds: 0, maxRounds: 3 }, settings: {}, codebase: null, run_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
   tables.messages.push({ id: randomUUID(), project_id: projectId, role: "user", content: "Create an invoice demo for Superbio", meta: {}, created_at: new Date(Date.now() - 2000).toISOString() });
   tables.messages.push({ id: randomUUID(), project_id: projectId, role: "user", content: "How deep should this go?\n→ Standard", meta: { answers: { scope: "Standard" } }, created_at: new Date(Date.now() - 1000).toISOString() });
@@ -376,6 +385,12 @@ async function research(runTurn: typeof import("../lib/agent").runTurn, projectI
   const searchedEarly = events.some((e) => e.type === "tool-call" && /web_/.test((e.payload as any).name));
   // 2. the answers
   tables.messages.push({ id: randomUUID(), project_id: projectId, role: "user", content: "How deep should the research go?\n→ Full book (20–40 pages, every topic, no skipping)", meta: { answers: { depth: "Full book (20–40 pages, every topic, no skipping)", focus: "Caching, Databases" } }, created_at: new Date().toISOString() });
+  if (scenario === "research-continue") {
+    // The failure from the deployed app: the split step was cut off, and the user's "Continue" (a new, non-resume turn) must not skip the research.
+    const row = tables.projects.find((p) => p.id === projectId)!;
+    row.settings = { phase: "split", phaseFresh: true, partialThought: "an outline of 14 parts" };
+    tables.messages.push({ id: randomUUID(), project_id: projectId, role: "user", content: "Continue", meta: {}, created_at: new Date(Date.now() + 1000).toISOString() });
+  }
   let resume = false;
   for (let i = 0; i < 40; i++) {
     const more = await run(resume);
@@ -384,7 +399,8 @@ async function research(runTurn: typeof import("../lib/agent").runTurn, projectI
     resume = true;
   }
   const order = requests.filter((r) => r.kind.startsWith("research-")).map((r) => r.reply);
-  const sequential = order.join("|") === order.slice().sort((a, b) => ["What is caching?", "How do databases scale?", "How do load balancers work?"].indexOf(a) - ["What is caching?", "How do databases scale?", "How do load balancers work?"].indexOf(b)).join("|");
+  const names = ["What is caching?", "How do databases scale?", "How do load balancers work?"];
+  const sequential = scenario !== "research" ? order.length >= 8 : order.join("|") === order.slice().sort((a, b) => ["What is caching?", "How do databases scale?", "How do load balancers work?"].indexOf(a) - ["What is caching?", "How do databases scale?", "How do load balancers work?"].indexOf(b)).join("|");
   const searches = events.filter((e) => e.type === "tool-call" && (e.payload as any).name === "web_search").length;
   const files = tables.files.filter((f) => f.project_id === projectId);
   const final = tables.messages.filter((m) => m.role === "assistant").pop();
@@ -392,7 +408,22 @@ async function research(runTurn: typeof import("../lib/agent").runTurn, projectI
   console.log(`\nmodel requests: ${requests.map((r) => r.kind).join(" > ")}`);
   console.log(`files written: ${files.map((f) => `${f.path} v${f.version}`).join(", ") || "NONE"}`);
   console.log(`final chat reply: ${JSON.stringify((final?.content ?? "").slice(0, 140))}`);
-  const checks = { asked, noEarlySearch: !searchedEarly, oneCallPerReply: process.env.RESEARCH_DELAY_MS ? true : searches === 3, sequential, findingsReachedPlan: researchSawFindings, wroteReport: files.length > 0 };
+  const kinds = requests.map((r) => r.kind);
+  const chapters = kinds.filter((k) => k.startsWith("chapter-")).length;
+  const researchersRan = kinds.filter((k) => k === "research-finish").length;
+  const planAfterResearch = kinds.indexOf("plan") > kinds.lastIndexOf("research-finish");
+  const checks: Record<string, boolean> = {
+    asked: scenario === "research-continue" ? true : asked,
+    noEarlySearch: !searchedEarly,
+    oneCallPerReply: process.env.RESEARCH_DELAY_MS || scenario !== "research" ? true : searches === 3,
+    sequential,
+    researchBeforePlan: researchersRan > 0 && planAfterResearch,
+    findingsReachedPlan: researchSawFindings,
+    bookByChapters: kinds.includes("book-head") && chapters === researchersRan && chapters > 0,
+    wroteBook: files.length > 0 && (storage.get(files[files.length - 1].storage_path) ?? "").includes(`id="ch${chapters}"`),
+  };
+  if (scenario === "research-hang") checks.fellBackToFocusAreas = kinds.includes("split-hang") && researchersRan >= 8;
+  void names;
   console.log(checks);
   const ok = Object.values(checks).every(Boolean);
   console.log(ok ? "RESULT: ok" : "RESULT: FAILED");

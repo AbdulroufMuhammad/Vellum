@@ -13,7 +13,8 @@ import { getTemplate, scopeQuestion } from "@/lib/templates";
 import { extractDesignSystem } from "@/lib/extractDesignSystem";
 import { ASK_PARAMETERS, cleanQuestions } from "@/lib/questions";
 import { depthFromAnswers, depthHint, withDepthQuestion } from "@/lib/research";
-import { cleanSplit, findingsText, ONE_AT_A_TIME, runResearchers, splitInstructions, SPLIT_SCHEMA, type ResearchState } from "@/lib/researchOrchestrator";
+import { findingsText, ONE_AT_A_TIME, outlineText, runResearchers, runSplit, type ResearchState } from "@/lib/researchOrchestrator";
+import { writeBook, type BookProgress } from "@/lib/bookWriter";
 import { planPreviewHtml, planningPlaceholderHtml } from "@/lib/planPreview";
 import { is3DRequest } from "@/lib/threeD";
 import { babylonGuide } from "@/lib/babylon3D";
@@ -356,6 +357,8 @@ type ProjectSettings = {
   plan?: Plan;
   /** A research request's parts and each researcher's progress and notes (see lib/researchOrchestrator.ts); cleared when the request is done. */
   research?: ResearchState;
+  /** A book being written chapter by chapter in the build step (see lib/bookWriter.ts); cleared when the request is done. */
+  book?: BookProgress;
   /** The phase this invocation starts fresh (not a time-limit resume within the same phase). */
   phaseFresh?: boolean;
   /** The build step's closing line, used as the reply when the check finds nothing to fix. */
@@ -575,17 +578,24 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     const answeredEarlier = userMsgs.slice(1).some((m) => m.meta?.answers);
     const nudge = String(newest?.content ?? "").trim().length < 120 && answeredEarlier;
     const mustAsk = !opts.resume && big && !isEdit && !newest?.meta?.answers && !optedOut && !nudge && template.id !== "research" && !redesign;
-    // "continue" after research stopped partway (an error, or Stop) carries on with the researchers instead of starting over.
-    const resumesResearch = !opts.resume && nudge && settings.phase === "research" && !!settings.research && settings.research.current < settings.research.questions.length;
+    // A "continue" (or any short nudge) after research stopped partway, in the split or in a researcher, carries on from there. It
+    // must never restart as a plan: that skipped the research and handed the planner a stale outline to think over.
+    const resumesResearch = !opts.resume && nudge && template.id === "research" && (settings.phase === "split" || settings.phase === "research");
+    if (resumesResearch) {
+      settings.phaseFresh = true;
+      delete settings.partialThought;
+    }
     if (!opts.resume && !resumesResearch) {
       delete settings.plan;
       delete settings.buildReply;
       delete settings.writer;
       delete settings.thinkCuts;
       delete settings.research;
+      delete settings.book;
       // The answers to a research form start the orchestrator: split into parts, research each, then plan, build and check.
       const startsResearch = template.id === "research" && !isEdit && (!!newest?.meta?.answers || (scopeOptOut && !files.length));
       if (startsResearch) {
+        delete settings.partialThought;
         settings.phase = "split";
         settings.phaseFresh = true;
       } else if (big && !isEdit && !mustScope && !mustAsk) {
@@ -593,16 +603,18 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
         settings.phaseFresh = true;
       } else delete settings.phase;
     }
+    // Research without its parts (lost state) starts again at the split rather than falling into a plan with no notes.
+    if (template.id === "research" && settings.phase === "research" && !settings.research) settings.phase = "split";
     const phase = settings.phase;
     const phaseFresh = !!settings.phaseFresh;
     if (phaseFresh) delete settings.phaseFresh;
     const baseTools = [...WEB_TOOL_SCHEMAS, ...GENAI_TOOL_SCHEMAS, VIDEO_TOOL_SCHEMA, ...(repo ? REPO_TOOL_SCHEMAS : []), ...(dataFiles.length ? [RUN_CODE_SCHEMA] : [])];
     const tools: ToolSchema[] =
       phase === "split" || phase === "research"
-        ? [SPLIT_SCHEMA]
+        ? []
       // A half-written file always needs the file tools, whatever the step.
       : phase === "plan" && !settings.partial
-        ? [...baseTools, ASK_SCHEMA, PLAN_SCHEMA]
+        ? settings.research ? [PLAN_SCHEMA] : [...baseTools, ASK_SCHEMA, PLAN_SCHEMA]
         : phase
           ? [...FILE_TOOL_SCHEMAS, ...baseTools, APPEND_SCHEMA, SAVE_DS_SCHEMA]
           : [...FILE_TOOL_SCHEMAS, ...baseTools, APPEND_SCHEMA, CHECK_SCHEMA, SAVE_DS_SCHEMA, ASK_SCHEMA];
@@ -665,11 +677,14 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
       const range = depth.pages[0] === depth.pages[1] ? `${depth.pages[0]}` : `${depth.pages[0]}-${depth.pages[1]}`;
       context += `\n\nResearch depth: ${depth.label}. The report should print to ${range.replace("-", " to ")} US Letter page${depth.pages[1] > 1 ? "s" : ""}: declare it with <meta name="pages" content="${range}"> and write enough real substance to fill it.${depth.key === "book" ? " It's a book: a title page, a table of contents, then one chapter per part, each teaching its topic from zero, step by step, with nothing skipped." : ""}`;
     }
-    if (phase === "split") context += splitInstructions(depth ?? depthPreferred);
     // The researchers' notes are what the report is planned and written from.
-    const researchNotes = settings.research && settings.research.current >= settings.research.questions.length ? findingsText(settings.research) : "";
+    const researchDone = !!settings.research && settings.research.current >= settings.research.questions.length;
+    const bookMode = researchDone && depth?.key === "book";
+    // The planner gets an outline (each part's summary and the start of its notes), not all of them: the notes of a whole book
+    // are far more than a planner can think over, and the chapters are written from their own notes later.
+    const researchNotes = researchDone ? (bookMode && phase === "plan" ? outlineText(settings.research!) : findingsText(settings.research!)) : "";
     if (researchNotes && (phase === "plan" || phase === "build" || phase === "check")) {
-      context += `\n\n## Research findings\nThe research is done: ${settings.research!.questions.length} researchers each covered one part and saved these notes. Build the report from them, citing the [S#] IDs exactly as they appear; search again only for a specific gap.\n${researchNotes}`;
+      context += `\n\n## Research findings\nThe research is done: ${settings.research!.questions.length} researchers each covered one part${bookMode && phase === "plan" ? " (an outline of their notes follows; the chapters are written from the full notes later)" : " and saved these notes"}. Build the report from them, citing the [S#] IDs exactly as they appear; ${bookMode ? "don't search" : "search again only for a specific gap"}.\n${researchNotes}`;
     }
     const carriedThought = settings.partialThought ?? "";
     if (carriedThought) {
@@ -877,9 +892,10 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
     };
 
     const finish = async (reply: string | null) => {
-      if (settings.phase || settings.plan || settings.buildReply || settings.writer || settings.workingVersions || settings.checkRounds || settings.research) {
+      if (settings.phase || settings.plan || settings.buildReply || settings.writer || settings.workingVersions || settings.checkRounds || settings.research || settings.book) {
         delete settings.checkRounds;
         delete settings.research;
+        delete settings.book;
         delete settings.phase;
         delete settings.plan;
         delete settings.buildReply;
@@ -934,6 +950,96 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
         } else {
           checkedClean = true;
           await finish(settings.buildReply || "Done. It's on the canvas.");
+        }
+      }
+      // The split is one small call (see runSplit), not a turn of the agent loop; it ends the invocation, and the researchers start next.
+      if (phase === "split") {
+        checkedClean = true;
+        await emit({ type: "note", payload: { text: "Splitting the research into parts." } });
+        const answerSets = recent.filter((m) => m.role === "user" && m.meta?.answers).map((m) => m.meta.answers as Record<string, string>);
+        const focusAreas = answerSets
+          .flatMap((a) => Object.entries(a).filter(([k]) => k !== "depth").map(([, v]) => String(v)))
+          .flatMap((v) => v.split(/\s*[,;\n]\s*/))
+          .map((v) => v.trim())
+          .filter((v) => v.length > 3 && v !== "Your call");
+        try {
+          settings.research = await runSplit({
+            model: currentModel,
+            brief: [requestText(), ...recent.filter((m) => m.role === "user" && m.meta?.answers).map((m) => `Scoping answers:\n${m.content}`)].join("\n\n"),
+            depth: depth ?? depthPreferred,
+            focusAreas,
+            deadline: deadline - STOP_MARGIN_MS,
+            signal,
+            emit,
+          });
+        } catch (e) {
+          if (signal.aborted) await emit({ type: "note", payload: { text: 'Stopped while splitting; say "continue" to carry on.' } });
+          else await emit({ type: "error", payload: { message: e instanceof Error ? e.message : String(e), detail: { phase: "split", model: currentModel } } });
+        }
+        if (settings.research) {
+          const parts = settings.research.questions;
+          settings.phase = "research";
+          settings.phaseFresh = true;
+          await db.from("projects").update({ settings }).eq("id", projectId);
+          await emit({ type: "note", payload: { text: `Split into ${parts.length} parts, each with its own researcher:\n${parts.map((q, n) => `${n + 1}. ${q.question}`).join("\n")}` } });
+          researchProgressed = true;
+          status = "paused";
+          await pauseForNext();
+        }
+      }
+      // A book is written chapter by chapter from each chapter's own notes, not as one reply (see lib/bookWriter.ts).
+      if (phase === "build" && bookMode && settings.plan && !checkedClean) {
+        checkedClean = true;
+        const plan = settings.plan;
+        const path = cleanPath(plan.files[0] ?? `${plan.title}.html`);
+        let doc: string | null = null;
+        let lastDraft = 0;
+        try {
+          doc = await writeBook({
+            model: currentModel,
+            request: requestText(),
+            plan: planText(plan),
+            direction: plan.direction,
+            title: plan.title,
+            sections: plan.sections.map((x) => x.name),
+            research: settings.research!,
+            pages: depth!.pages,
+            progress: settings.book?.path === path ? settings.book : null,
+            path,
+            deadline: deadline - STOP_MARGIN_MS,
+            signal,
+            onProgress: async (p) => {
+              settings.book = p;
+              researchProgressed = true;
+              await db.from("projects").update({ settings }).eq("id", projectId);
+            },
+            onNote: (text) => emit({ type: "note", payload: { text } }),
+            onDraft: (html) => {
+              const now = Date.now();
+              if (now - lastDraft < 400) return;
+              lastDraft = now;
+              void emit({ type: "draft", payload: { path, append: html, reset: true } });
+            },
+          });
+        } catch (e) {
+          if (signal.aborted) await finish(settings.book ? "Stopped. The chapters written so far are kept; say \"continue\" to carry on." : null);
+          else await emit({ type: "error", payload: { message: e instanceof Error ? e.message : String(e), detail: { phase: "build", model: currentModel, book: settings.book?.done ?? 0 } } });
+        }
+        if (doc) {
+          const w = await fileTools.write_file({ path, content: doc });
+          unchecked = w.path;
+          touched.set(w.path, { version: w.version, created: w.created });
+          delete settings.book;
+          settings.phase = "check";
+          settings.phaseFresh = true;
+          settings.pendingCheck = unchecked;
+          settings.buildReply = `Wrote "${w.path}": ${settings.research!.questions.length} chapters, each from its own research.`;
+          await db.from("projects").update({ settings }).eq("id", projectId);
+          status = "paused";
+          await pauseForNext();
+        } else if (!signal.aborted && settings.book) {
+          status = "paused";
+          await pauseForNext();
         }
       }
       // The research step runs the researchers, one part after another; the model's own loop doesn't run in it.
@@ -1002,7 +1108,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
         const writerMode = !!settings.writer || phase === "build" || phase === "check";
         // Re-checked every second once past the limit: slow thinkers may not have written much yet when it's first reached.
         // A model known to reason even with thinking off can't write without some thinking first, so it starts with the edit limit.
-        const baseLimit = writerMode ? (ignoresThinkingOff(currentModel) ? THINK_LIMIT_MS : WRITER_THINK_MS) : phase === "plan" || phase === "split" ? PLAN_THINK_MS : THINK_LIMIT_MS;
+        const baseLimit = writerMode ? (ignoresThinkingOff(currentModel) ? THINK_LIMIT_MS : WRITER_THINK_MS) : phase === "plan" ? PLAN_THINK_MS : THINK_LIMIT_MS;
         const thinkLimit = baseLimit * 2 ** Math.min(thinkCuts, MAX_THINK_CUTS);
         const cutting = thinkCuts < MAX_THINK_CUTS;
         // A model that drafts the deliverable inside its reasoning (the whole HTML and CSS) burns the time budget and starts
@@ -1040,7 +1146,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             deadline,
             signal: stepCtrl.signal,
             // Planning that was cut once submits its plan from the notes it already has, without thinking all over again.
-            thinking: writerMode || (phase === "plan" && thinkCuts > 0) ? "off" : undefined,
+            thinking: writerMode || (phase === "plan" && (thinkCuts > 0 || !!settings.research)) ? "off" : undefined,
             onToken: (t) => {
               acted = true;
               void emit({ type: "token", payload: { t } });
@@ -1126,7 +1232,7 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
             const onlyReplyLeft = !!settings.pendingCheck && !settings.partial && phase !== "build";
             if (onlyReplyLeft) {
               r = { content: "Done. It's on the canvas.", reasoning: "", toolCalls: [], finish: "stop", usage: null };
-            } else if (phase !== "plan" && phase !== "split" && !asking) {
+            } else if (phase !== "plan" && !asking) {
               settings.writer = true;
               const written = await writeFresh(plan);
               if (written) {
@@ -1140,8 +1246,6 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
                 content:
                   asking
                     ? `You've thought enough. Call ask_questions now with the form described above, in this reply, and nothing else. Your thinking so far:\n"""\n${draft}\n"""`
-                    : phase === "split"
-                    ? `You've thought enough. Call split_research now with the parts, in this reply, and nothing else. Your thinking so far:\n"""\n${draft}\n"""`
                     : phase === "plan"
                     ? `You've thought enough; time to hand in the plan. Your thinking so far:\n"""\n${draft}\n"""\nCall submit_plan now with a concrete plan based on it. Keep any further thinking to a few sentences.`
                     : `Stop thinking and write. Your notes so far:\n"""\n${draft}\n"""\nCall write_file now with the <head>, the styles and the first sections only (about 4,000 to 6,000 characters), then continue with append_file for the next sections, in parts.`,
@@ -1204,11 +1308,6 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
               continue;
             }
           }
-        }
-        // The orchestrator never listed its parts: research the request as one part rather than ending without a report.
-        if (!r.toolCalls.length && phase === "split") {
-          await emit({ type: "note", payload: { text: "No parts were given; researching the request as one part." } });
-          r.toolCalls = [{ id: `split-fallback-${step}`, name: "split_research", args: JSON.stringify({ parts: [{ question: requestText().slice(0, 400) }] }) }];
         }
         const text = r.content.trim();
         if (!r.toolCalls.length) {
@@ -1466,19 +1565,6 @@ export async function runTurn(db: SupabaseClient, projectId: string, opts: TurnO
                 dsSaved = true;
                 result = { ok: true, id: saved.id, note: "Saved. It's now in the design system picker and set as this project's design system." };
                 summary = { dsName: saved.name, system: saved };
-                break;
-              }
-              case "split_research": {
-                if (phase !== "split") throw new Error("split_research is only for the research split step");
-                settings.research = cleanSplit(args, depth ?? depthPreferred);
-                settings.phase = "research";
-                settings.phaseFresh = true;
-                await db.from("projects").update({ settings }).eq("id", projectId);
-                const parts = settings.research.questions;
-                await emit({ type: "note", payload: { text: `Split into ${parts.length} parts, each with its own researcher:\n${parts.map((q, n) => `${n + 1}. ${q.question}`).join("\n")}` } });
-                result = { ok: true, note: "Saved. The researchers start next, one part at a time." };
-                summary = { parts: parts.map((q) => q.question) };
-                planned = true;
                 break;
               }
               case "submit_plan": {

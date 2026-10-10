@@ -250,13 +250,18 @@ read-only file, render and export endpoints they use).
   agent never skips it; words like "a full book" or "quick" only preselect the
   depth). Depths in `lib/research.ts`: quick overview, standard report, deep
   dive, and full book (20–40 pages, a chapter per part). After the form, an
-  orchestrator splits the request into parts (`split_research`), then one
+  orchestrator splits the request into parts (one small call with thinking off,
+  `runSplit`; if the model gives nothing usable the parts come from the focus
+  areas you ticked), then one
   researcher per part runs, strictly one after another
   (`lib/researchOrchestrator.ts`): a fresh session of the same model that
   searches and reads with **no limit** until its part is covered, saving cited
   notes as it goes. Everything is saved per call, so the 300-second invocation
   limit only pauses a researcher; the next invocation carries on. The notes
-  then go to the usual plan → build → check steps. Every agent makes **one
+  then go to the usual plan → build → check steps; a full book is planned from
+  an outline of the notes and written chapter by chapter, each from its own
+  notes (`lib/bookWriter.ts`). "Continue" after a stop never skips the research.
+  Every agent makes **one
   tool call per reply**: extra calls in a reply are answered "not run".
 - **Present & export** — Present slides shows one slide at a time full screen
   with speaker notes; Share exports PDF (printed on the server by Chromium,
